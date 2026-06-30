@@ -27,6 +27,7 @@ async def query_all_items(offset: int = 0, limit: int = 10, count_only: bool = F
         
         stmt = (
             select(
+                Goods.id,
                 Goods.name,
                 Goods.price,
                 func.coalesce(stock_subq.c.stock, 0).label("stock")
@@ -37,7 +38,7 @@ async def query_all_items(offset: int = 0, limit: int = 10, count_only: bool = F
             .limit(limit)
         )
         result = await s.execute(stmt)
-        return [{"name": row.name, "price": float(row.price), "stock": row.stock} for row in result.all()]
+        return [{"id": row.id, "name": row.name, "price": float(row.price), "stock": row.stock} for row in result.all()]
 
 
 async def query_user_bought_items(user_id: int, offset: int = 0, limit: int = 10, count_only: bool = False) -> Any:

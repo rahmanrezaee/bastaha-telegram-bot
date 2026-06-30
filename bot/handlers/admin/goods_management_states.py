@@ -13,7 +13,10 @@ from bot.keyboards.inline import back, simple_buttons, lazy_paginated_keyboard
 from bot.database.methods.audit import log_audit
 from bot.filters import HasPermissionFilter
 from bot.misc import EnvKeys, LazyPaginator
-from bot.states import GoodsFSM
+from bot.states import GoodsFSM, UpdateItemFSM
+from bot.database.methods.lazy_queries import query_all_items
+from bot.database.methods.read import get_item_name_by_id
+from bot.database.methods import check_value
 
 router = Router()
 
@@ -36,100 +39,111 @@ async def goods_management_callback_handler(call: CallbackQuery, state):
     await state.clear()
 
 
-@router.callback_query(F.data == 'delete_item', HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
-async def delete_item_callback_handler(call: CallbackQuery, state):
-    """
-    Requests a position name to delete.
-    """
-    await call.message.edit_text(localize('admin.goods.delete.prompt.name'), reply_markup=back("goods_management"))
-    await state.set_state(GoodsFSM.waiting_item_name_delete)
-
-
-@router.message(GoodsFSM.waiting_item_name_delete, F.text)
-async def delete_str_item(message: Message, state):
-    """
-    Deletes a position by the provided name.
-    """
-    item_name = message.text
-    item = await get_item_info_cached(item_name)
-    if not item:
-        await message.answer(
-            localize('admin.goods.delete.position.not_found'),
-            reply_markup=back('goods_management')
-        )
-    else:
-        await delete_item(item_name)
-        await message.answer(
-            localize('admin.goods.delete.position.success'),
-            reply_markup=back('goods_management')
-        )
-        admin_info = await message.bot.get_chat(message.from_user.id)
-        await log_audit("delete_item", user_id=message.from_user.id, resource_type="Item", resource_id=item_name, details=f"admin={admin_info.first_name}")
-    await state.clear()
-
-
-@router.callback_query(F.data == 'show__items_in_position', HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
-async def show_items_callback_handler(call: CallbackQuery, state):
-    """
-    Requests a position name to show its items.
-    """
-    await call.message.edit_text(localize('admin.goods.prompt.enter_item_name'), reply_markup=back("goods_management"))
-    await state.set_state(GoodsFSM.waiting_item_name_show)
-
-
-@router.message(GoodsFSM.waiting_item_name_show, F.text)
-async def show_str_item(message: Message, state: FSMContext):
-    """
-    Shows all items in the selected position with lazy loading pagination.
-    """
-    item_name = message.text.strip()
-    item = await get_item_info_cached(item_name)
-    if not item:
-        await message.answer(
-            localize('admin.goods.position.not_found'),
-            reply_markup=back('goods_management')
-        )
-        await state.clear()
-        return
-
-    # Create paginator
-    query_func = partial(query_items_in_position, item_name)
-    paginator = LazyPaginator(query_func, per_page=10)
-
-    # Check if there are any items
+@router.callback_query(F.data.in_({'update_item_amount', 'update_item', 'delete_item', 'show__items_in_position'}), HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
+async def prompt_item_selection(call: CallbackQuery, state: FSMContext):
+    action = call.data
+    action_map = {
+        'update_item_amount': 'addval',
+        'update_item': 'upd',
+        'delete_item': 'del',
+        'show__items_in_position': 'show'
+    }
+    short_action = action_map[action]
+    
+    paginator = LazyPaginator(query_all_items, per_page=10)
     total = await paginator.get_total_count()
     if total == 0:
-        await message.answer(
-            localize('admin.goods.list_in_position.empty'),
-            reply_markup=back('goods_management')
-        )
-        await state.clear()
+        await call.message.edit_text(localize('admin.goods.list_in_position.empty'), reply_markup=back('goods_management'))
         return
-
-    # Generate a short hash for the item name to save space in callback_data
-    item_hash = generate_short_hash(item_name)
-
-    # Store mapping in state
-    await state.update_data(
-        item_hash_mapping={item_hash: item_name},
-        current_position_name=item_name
-    )
 
     markup = await lazy_paginated_keyboard(
         paginator=paginator,
-        item_text=lambda g: str(g),
-        item_callback=lambda g: f"si_{g}_{item_hash}_0",  # Shortened format
+        item_text=lambda g: f"{g['name']} ({g['stock']} шт.)",
+        item_callback=lambda g: f"do_{short_action}_{g['id']}",
         page=0,
         back_cb="goods_management",
-        nav_cb_prefix=f"gip_{item_hash}_"  # Shortened prefix
+        nav_cb_prefix=f"seli_{short_action}_"
     )
+    await call.message.edit_text(localize('shop.goods.choose'), reply_markup=markup)
+    await state.update_data(goods_selection_paginator=paginator.get_state())
 
-    await message.answer(localize('admin.goods.list_in_position.title'), reply_markup=markup)
+@router.callback_query(F.data.startswith('seli_'), HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
+async def navigate_goods_selection(call: CallbackQuery, state: FSMContext):
+    parts = call.data[5:].split('_')
+    short_action = parts[0]
+    page = int(parts[1]) if len(parts) > 1 else 0
 
-    # Save state
-    await state.update_data(
-        items_in_position_paginator=paginator.get_state()
+    data = await state.get_data()
+    paginator_state = data.get('goods_selection_paginator')
+    
+    paginator = LazyPaginator(query_all_items, per_page=10, state=paginator_state)
+
+    markup = await lazy_paginated_keyboard(
+        paginator=paginator,
+        item_text=lambda g: f"{g['name']} ({g['stock']} шт.)",
+        item_callback=lambda g: f"do_{short_action}_{g['id']}",
+        page=page,
+        back_cb="goods_management",
+        nav_cb_prefix=f"seli_{short_action}_"
     )
+    await call.message.edit_text(localize('shop.goods.choose'), reply_markup=markup)
+    await state.update_data(goods_selection_paginator=paginator.get_state())
+
+
+@router.callback_query(F.data.startswith('do_'), HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
+async def handle_item_selection(call: CallbackQuery, state: FSMContext):
+    parts = call.data[3:].split('_', 1)
+    short_action = parts[0]
+    item_id = int(parts[1])
+    
+    item_name = await get_item_name_by_id(item_id)
+    if not item_name:
+        await call.answer(localize('admin.goods.position.not_found'), show_alert=True)
+        return
+        
+    if short_action == 'del':
+        await delete_item(item_name)
+        await call.message.edit_text(localize('admin.goods.delete.position.success'), reply_markup=back('goods_management'))
+        admin_info = await call.message.bot.get_chat(call.from_user.id)
+        await log_audit("delete_item", user_id=call.from_user.id, resource_type="Item", resource_id=item_name, details=f"admin={admin_info.first_name}")
+        await state.clear()
+        
+    elif short_action == 'show':
+        query_func = partial(query_items_in_position, item_name)
+        paginator = LazyPaginator(query_func, per_page=10)
+        total = await paginator.get_total_count()
+        if total == 0:
+            await call.message.edit_text(localize('admin.goods.list_in_position.empty'), reply_markup=back('goods_management'))
+            await state.clear()
+            return
+
+        item_hash = generate_short_hash(item_name)
+        await state.update_data(item_hash_mapping={item_hash: item_name}, current_position_name=item_name)
+
+        markup = await lazy_paginated_keyboard(
+            paginator=paginator,
+            item_text=lambda g: str(g),
+            item_callback=lambda g: f"si_{g}_{item_hash}_0",
+            page=0,
+            back_cb="goods_management",
+            nav_cb_prefix=f"gip_{item_hash}_"
+        )
+        await call.message.edit_text(localize('admin.goods.list_in_position.title'), reply_markup=markup)
+        await state.update_data(items_in_position_paginator=paginator.get_state())
+
+    elif short_action == 'addval':
+        if await check_value(item_name):
+            await call.message.edit_text(localize('admin.goods.update.amount.infinity_forbidden'), reply_markup=back('goods_management'))
+            return
+        
+        await state.update_data(item_name=item_name)
+        await call.message.edit_text(localize('admin.goods.add.values.prompt_multi'), reply_markup=back("goods_management"))
+        await state.set_state(UpdateItemFSM.waiting_item_values_upd)
+
+    elif short_action == 'upd':
+        await state.update_data(item_old_name=item_name)
+        await call.message.edit_text(localize('admin.goods.update.prompt.new_name'), reply_markup=back('goods_management'))
+        await state.set_state(UpdateItemFSM.waiting_item_new_name)
 
 
 @router.callback_query(F.data.startswith('gip_'), HasPermissionFilter(permission=Permission.CATALOG_MANAGE))

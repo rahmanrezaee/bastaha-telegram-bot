@@ -18,46 +18,7 @@ from bot.states import UpdateItemFSM
 router = Router()
 
 
-@router.callback_query(F.data == 'update_item_amount', HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
-async def update_item_amount_callback_handler(call: CallbackQuery, state):
-    """Starts the flow for adding values (stock) to an existing item."""
-    await call.message.edit_text(
-        localize('admin.goods.update.amount.prompt.name'),
-        reply_markup=back("goods_management")
-    )
-    await state.set_state(UpdateItemFSM.waiting_item_name_for_amount_upd)
 
-
-@router.message(UpdateItemFSM.waiting_item_name_for_amount_upd, F.text)
-async def check_item_name_for_amount_upd(message: Message, state):
-    """
-    Validate that item exists and is NOT infinite.
-    If item is infinite — values cannot be added.
-    """
-    item_name = message.text.strip()
-    item = await get_item_info_cached(item_name)
-    if not item:
-        await message.answer(
-            localize('admin.goods.update.amount.not_exists'),
-            reply_markup=back('goods_management')
-        )
-        return
-
-    # If item is infinite, we logically can't add individual values
-    if await check_value(item_name):
-        await message.answer(
-            localize('admin.goods.update.amount.infinity_forbidden'),
-            reply_markup=back('goods_management')
-        )
-        return
-
-    # Otherwise start collecting values
-    await state.update_data(item_name=item_name)
-    await message.answer(
-        localize('admin.goods.add.values.prompt_multi'),
-        reply_markup=back("goods_management")
-    )
-    await state.set_state(UpdateItemFSM.waiting_item_values_upd)
 
 
 @router.message(UpdateItemFSM.waiting_item_values_upd, F.text)
@@ -151,28 +112,7 @@ async def updating_item_amount(call: CallbackQuery, state):
     await state.clear()
 
 
-@router.callback_query(F.data == 'update_item', HasPermissionFilter(permission=Permission.CATALOG_MANAGE))
-async def update_item_callback_handler(call: CallbackQuery, state):
-    """Starts the full update flow."""
-    await call.message.edit_text(localize('admin.goods.update.prompt.name'), reply_markup=back("goods_management"))
-    await state.set_state(UpdateItemFSM.waiting_item_name_for_update)
 
-
-@router.message(UpdateItemFSM.waiting_item_name_for_update, F.text)
-async def check_item_name_for_update(message: Message, state):
-    """Validate item and ask for a new name."""
-    item_name = message.text.strip()
-    item = await get_item_info_cached(item_name)
-    if not item:
-        await message.answer(
-            localize('admin.goods.update.not_exists'),
-            reply_markup=back('goods_management')
-        )
-        return
-
-    await state.update_data(item_old_name=item_name)
-    await message.answer(localize('admin.goods.update.prompt.new_name'), reply_markup=back('goods_management'))
-    await state.set_state(UpdateItemFSM.waiting_item_new_name)
 
 
 @router.message(UpdateItemFSM.waiting_item_new_name, F.text)

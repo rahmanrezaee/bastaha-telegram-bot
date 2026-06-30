@@ -194,6 +194,12 @@ async def get_item_info(item_name: str) -> dict | None:
         return _obj_to_dict(obj, Goods) if obj else None
 
 
+async def get_item_name_by_id(item_id: int) -> str | None:
+    """Return item name by id, or None."""
+    async with Database().session() as s:
+        return (await s.execute(select(Goods.name).where(Goods.id == item_id))).scalar()
+
+
 async def get_goods_info(item_id: int) -> dict | None:
     """Return item_value row as dict by id, including item_name from Goods."""
     async with Database().session() as s:
