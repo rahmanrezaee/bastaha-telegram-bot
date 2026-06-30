@@ -19,7 +19,7 @@ from bot.misc.services import CryptoPayAPI, CryptoPayAPIError, send_stars_invoic
 from bot.misc.services.payment import _minor_units_for
 from bot.filters import ValidAmountFilter
 from bot.i18n import localize
-from bot.states import BalanceStates
+from bot.states import BalanceStates, ShopStates
 
 router = Router()
 
@@ -597,7 +597,6 @@ async def change_qty_handler(call: CallbackQuery, state: FSMContext):
         
     await state.set_state(BalanceStates.waiting_amount) # reuse or create new? Let's use ShopStates instead
     
-    from bot.states.shop_state import ShopStates
     await state.set_state(ShopStates.changing_qty)
     from bot.keyboards import back
     await call.message.edit_text("Enter the quantity you want to purchase:", reply_markup=back("buy"))
