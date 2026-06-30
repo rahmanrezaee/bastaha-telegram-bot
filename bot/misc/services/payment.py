@@ -7,7 +7,6 @@ from aiogram import Bot
 from aiogram.types import LabeledPrice
 
 from bot.misc import EnvKeys
-from bot.i18n import localize
 
 # Currencies without minor units (no cents)
 ZERO_DEC_CURRENCIES = {"JPY", "KRW"}
@@ -34,6 +33,7 @@ async def send_stars_invoice(
     LabeledPrice.amount for Stars is a whole number of stars.
     """
     stars = currency_to_stars(amount)
+    from bot.i18n import localize
 
     prices = [LabeledPrice(label=localize("payments.invoice.label.stars", stars=stars), amount=stars)]
     payload = {
@@ -81,6 +81,7 @@ async def send_fiat_invoice(
     currency = (getattr(EnvKeys, "PAY_CURRENCY", None) or "RUB").upper()
     multiplier = _minor_units_for(currency)
     amount_minor = int(amount) * multiplier
+    from bot.i18n import localize
 
     prices = [
         LabeledPrice(
