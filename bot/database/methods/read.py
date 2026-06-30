@@ -5,9 +5,9 @@ from typing import Optional, Dict, TypeVar, Callable, Any, Coroutine
 
 from sqlalchemy import func, exists, select
 
-from bot.database.models import Database, User, ItemValues, Goods, Categories, Role, BoughtGoods, \
+from bot.database.models import Database, User, ItemValues, Goods, Role, BoughtGoods, \
     Operations, ReferralEarnings, Permission
-from bot.database.models.main import PromoCodes, PromoCodeUsages, CartItems, Reviews
+from bot.database.models.main import PromoCodes, PromoCodeUsages, Reviews
 from bot.misc.caching import get_cache_manager
 
 F = TypeVar('F', bound=Callable[..., Coroutine[Any, Any, Any]])
@@ -210,12 +210,7 @@ async def get_goods_info(item_id: int) -> dict | None:
         return d
 
 
-async def check_category(category_name: str) -> dict | None:
-    """Return category as dict by name, or None."""
-    async with Database().session() as s:
-        result = await s.execute(select(Categories).where(Categories.name == category_name))
-        obj = result.scalars().first()
-        return _obj_to_dict(obj, Categories) if obj else None
+
 
 
 async def select_item_values_amount(item_name: str) -> int:
@@ -268,10 +263,7 @@ async def select_count_goods() -> int:
         return (await s.execute(select(func.count()).select_from(Goods))).scalar() or 0
 
 
-async def select_count_categories() -> int:
-    """Return total count of categories."""
-    async with Database().session() as s:
-        return (await s.execute(select(func.count()).select_from(Categories))).scalar() or 0
+
 
 
 async def select_count_bought_items() -> int:
@@ -437,10 +429,7 @@ async def check_role_cached(telegram_id: int):
     return await check_role(telegram_id)
 
 
-@async_cached(ttl=1800, key_prefix="category")
-async def check_category_cached(category_name: str):
-    """Cached Category Check"""
-    return await check_category(category_name)
+
 
 
 @async_cached(ttl=900, key_prefix="item_info")
@@ -478,25 +467,16 @@ async def invalidate_user_cache(user_id: int):
         await cache.invalidate_pattern(f"user_items:{user_id}:*")
 
 
-async def invalidate_item_cache(item_name: str, category_name: str = None):
+async def invalidate_item_cache(item_name: str):
     """Invalidate product cache"""
     cache = get_cache_manager()
     if cache:
         await cache.delete(f"item:{item_name}")
         await cache.delete(f"item_info:{item_name}")
         await cache.delete(f"item_values:{item_name}")
-        if category_name:
-            await cache.delete(f"category:{category_name}")
-        else:
-            await cache.invalidate_pattern("category:*")
 
 
-async def invalidate_category_cache(category_name: str):
-    """Invalidate category cache"""
-    cache = get_cache_manager()
-    if cache:
-        await cache.delete(f"category:{category_name}")
-        await cache.invalidate_pattern(f"category_items:{category_name}:*")
+
 
 
 async def invalidate_stats_cache():
@@ -562,33 +542,12 @@ async def validate_promo_for_item(
             if not item or item.id != promo.item_id:
                 return False, "promo.wrong_item", {}
 
-        if promo.category_id:
-            item = (await s.execute(
-                select(Goods).where(Goods.name == item_name)
-            )).scalars().first()
-            if not item or item.category_id != promo.category_id:
-                return False, "promo.wrong_category", {}
+
 
         return True, "", _obj_to_dict(promo, PromoCodes)
 
 
-# --- Cart ---
 
-async def get_cart_items(user_id: int) -> list[dict]:
-    """Return all cart items for user."""
-    async with Database().session() as s:
-        result = await s.execute(
-            select(CartItems).where(CartItems.user_id == user_id).order_by(CartItems.added_at.desc())
-        )
-        return [_obj_to_dict(item, CartItems) for item in result.scalars().all()]
-
-
-async def get_cart_count(user_id: int) -> int:
-    """Return count of items in user's cart."""
-    async with Database().session() as s:
-        return (await s.execute(
-            select(func.count(CartItems.id)).where(CartItems.user_id == user_id)
-        )).scalar() or 0
 
 
 # --- Reviews ---

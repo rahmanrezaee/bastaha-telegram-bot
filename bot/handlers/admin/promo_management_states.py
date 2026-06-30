@@ -10,7 +10,7 @@ from bot.database.methods.create import create_promo_code
 from bot.database.methods.delete import delete_promo_code
 from bot.database.methods.update import toggle_promo_code
 from bot.database.methods.lazy_queries import query_promo_codes
-from bot.database.methods.read import get_promo_code, check_category, get_item_info
+from bot.database.methods.read import get_promo_code, get_item_info
 from bot.database.methods.audit import log_audit
 from bot.filters import HasPermissionFilter
 from bot.keyboards.inline import back, simple_buttons, lazy_paginated_keyboard
@@ -278,7 +278,6 @@ async def promo_receive_expires(message: Message, state: FSMContext):
         return
 
     buttons = [
-        ("📂 " + localize("admin.promo.binding.category"), "promo_bind_category"),
         ("📦 " + localize("admin.promo.binding.item"), "promo_bind_item"),
         ("🚫 " + localize("admin.promo.binding.none"), "promo_bind_none"),
         (localize("btn.back"), "promo_mgmt"),
@@ -289,17 +288,14 @@ async def promo_receive_expires(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("promo_bind_"), PromoFSM.waiting_binding_type)
 async def promo_binding_type_chosen(call: CallbackQuery, state: FSMContext):
-    choice = call.data.replace("promo_bind_", "")  # "category", "item", or "none"
+    choice = call.data.replace("promo_bind_", "")  # "item", or "none"
 
     if choice == "none":
         await _finalize_promo_creation(call.message, state, call.from_user.id)
         return
 
     await state.update_data(promo_binding_type=choice)
-    if choice == "category":
-        prompt = localize("admin.promo.prompt.category_name")
-    else:
-        prompt = localize("admin.promo.prompt.item_name")
+    prompt = localize("admin.promo.prompt.item_name")
     await call.message.edit_text(prompt, reply_markup=back("promo_mgmt"))
     await state.set_state(PromoFSM.waiting_binding_name)
 
@@ -310,18 +306,11 @@ async def promo_receive_binding_name(message: Message, state: FSMContext):
     binding_type = data.get('promo_binding_type')
     name = (message.text or "").strip()
 
-    if binding_type == "category":
-        cat = await check_category(name)
-        if not cat:
-            await message.answer(localize("admin.promo.category_not_found"), reply_markup=back("promo_mgmt"))
-            return
-        await state.update_data(promo_category_id=cat['id'])
-    else:
-        item = await get_item_info(name)
-        if not item:
-            await message.answer(localize("admin.promo.item_not_found"), reply_markup=back("promo_mgmt"))
-            return
-        await state.update_data(promo_item_id=item['id'])
+    item = await get_item_info(name)
+    if not item:
+        await message.answer(localize("admin.promo.item_not_found"), reply_markup=back("promo_mgmt"))
+        return
+    await state.update_data(promo_item_id=item['id'])
 
     await _finalize_promo_creation(message, state, message.from_user.id)
 
@@ -337,7 +326,6 @@ async def _finalize_promo_creation(target, state: FSMContext, user_id: int):
         discount_value=data['promo_value'],
         max_uses=data.get('promo_max_uses', 0),
         expires_at=expires_at,
-        category_id=data.get('promo_category_id'),
         item_id=data.get('promo_item_id'),
     )
 

@@ -24,9 +24,9 @@ def main_menu(role: int, channel: str | None = None, helper: str | None = None) 
     return kb.as_markup()
 
 
-def profile_keyboard(referral_percent: int, user_items: int = 0, cart_count: int = 0) -> InlineKeyboardMarkup:
+def profile_keyboard(referral_percent: int, user_items: int = 0) -> InlineKeyboardMarkup:
     """
-    Profile keyboard with cart, history, subscriptions.
+    Profile keyboard with history, subscriptions.
     """
     kb = InlineKeyboardBuilder()
     kb.button(text=localize("btn.replenish"), callback_data="replenish_balance")
@@ -34,8 +34,6 @@ def profile_keyboard(referral_percent: int, user_items: int = 0, cart_count: int
         kb.button(text=localize("btn.referral"), callback_data="referral_system")
     if user_items != 0:
         kb.button(text=localize("btn.purchased"), callback_data="bought_items")
-    cart_text = localize("btn.cart", count=cart_count) if cart_count > 0 else localize("btn.cart_empty")
-    kb.button(text=cart_text, callback_data="cart")
     kb.button(text=localize("btn.operation_history"), callback_data="operation_history")
     kb.button(text=localize("btn.redeem_promo"), callback_data="redeem_promo")
     kb.button(text=localize("btn.back"), callback_data="back_to_menu")
@@ -51,7 +49,6 @@ def admin_console_keyboard(maintenance_mode: bool = False, role: int = 127) -> I
     if role & Permission.CATALOG_MANAGE:
         kb.button(text=localize("admin.menu.shop"), callback_data="shop_management")
         kb.button(text=localize("admin.menu.goods"), callback_data="goods_management")
-        kb.button(text=localize("admin.menu.categories"), callback_data="categories_management")
     if role & Permission.PROMO_MANAGE:
         kb.button(text=localize("admin.menu.promo"), callback_data="promo_mgmt")
     if role & Permission.USERS_MANAGE:
@@ -101,6 +98,7 @@ async def lazy_paginated_keyboard(
         back_cb: str | None = None,
         nav_cb_prefix: str = "",
         back_text: str | None = None,
+        extra_row_above_nav: list[InlineKeyboardButton] | None = None,
 ) -> InlineKeyboardMarkup:
     """
     Lazy pagination keyboard with data loading on demand
@@ -114,15 +112,18 @@ async def lazy_paginated_keyboard(
         kb.button(text=item_text(item), callback_data=item_callback(item))
     kb.adjust(1)
 
+    if extra_row_above_nav:
+        kb.row(*extra_row_above_nav)
+
     # Navigation
     total_pages = await paginator.get_total_pages()
     if total_pages > 1:
         nav_buttons = []
         if page > 0:
-            nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"{nav_cb_prefix}{page - 1}"))
+            nav_buttons.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"{nav_cb_prefix}{page - 1}"))
         nav_buttons.append(InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="noop"))
         if page < total_pages - 1:
-            nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"{nav_cb_prefix}{page + 1}"))
+            nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"{nav_cb_prefix}{page + 1}"))
         kb.row(*nav_buttons)
 
     if back_cb:
@@ -137,11 +138,10 @@ def item_info(
         applied_promo: str = None, reviews_enabled: bool = True,
 ) -> InlineKeyboardMarkup:
     """
-    Product card with buy, cart, promo, review buttons.
+    Product card with buy, promo, review buttons.
     """
     kb = InlineKeyboardBuilder()
-    kb.button(text=localize("btn.buy"), callback_data="buy")
-    kb.button(text=localize("btn.add_to_cart"), callback_data="add_to_cart")
+    kb.button(text=localize("btn.buy_now"), callback_data="buy")
     if applied_promo:
         kb.button(text=localize("btn.remove_promo"), callback_data="remove_promo")
     else:
@@ -151,8 +151,8 @@ def item_info(
             kb.button(text=localize("btn.view_reviews", count=review_count), callback_data=f"reviews:{item_name}:0")
         if has_purchased:
             kb.button(text=localize("btn.leave_review"), callback_data=f"review:{item_name}")
-    kb.button(text=localize("btn.back"), callback_data=back_data)
-    kb.adjust(2)
+    kb.button(text=localize("btn.back_to_store"), callback_data=back_data)
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -164,6 +164,21 @@ def payment_menu(pay_url: str) -> InlineKeyboardMarkup:
     kb.button(text=localize("btn.pay"), url=pay_url)
     kb.button(text=localize("btn.check_payment"), callback_data="check")
     kb.button(text=localize("btn.back"), callback_data="profile")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def item_payment_keyboard(item_name: str, has_crypto: bool, has_fiat: bool, has_stars: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💲 Pay from Balance", callback_data="buy_from_balance")
+    
+    if has_crypto:
+        kb.button(text="🟢 BEP20 USDT (Top up first)", callback_data="replenish_balance")
+        kb.button(text="🟣 TRC20 USDT (Top up first)", callback_data="replenish_balance")
+    
+    # We don't have direct binance/bybit pay configured yet, so just add them as placeholders or use crypto
+    kb.button(text="⬅️ Change Qty", callback_data="change_qty")
+    kb.button(text="🏠 Home", callback_data="back_to_menu")
     kb.adjust(1)
     return kb.as_markup()
 

@@ -170,7 +170,7 @@ async def check_item_name_for_update(message: Message, state):
         )
         return
 
-    await state.update_data(item_old_name=item_name, item_category=item['category_id'])
+    await state.update_data(item_old_name=item_name)
     await message.answer(localize('admin.goods.update.prompt.new_name'), reply_markup=back('goods_management'))
     await state.set_state(UpdateItemFSM.waiting_item_new_name)
 
@@ -236,12 +236,11 @@ async def update_item_process(call: CallbackQuery, state):
     item_old_name = data.get('item_old_name')
     item_new_name = data.get('item_new_name')
     item_description = data.get('item_description')
-    category = data.get('item_category')
     price = data.get('item_price')
 
     if decision_yesno == 'no':
         # No type change (keep infinity/regular), update meta only
-        await update_item(item_old_name, item_new_name, item_description, price, category)
+        await update_item(item_old_name, item_new_name, item_description, price)
         await call.message.edit_text(localize('admin.goods.update.success'), reply_markup=back('goods_management'))
         admin_info = await call.message.bot.get_chat(call.from_user.id)
         await log_audit("update_item", user_id=call.from_user.id, resource_type="Item", resource_id=item_new_name,
@@ -278,13 +277,12 @@ async def update_item_infinity(message: Message, state):
     item_old_name = data.get('item_old_name')
     item_new_name = data.get('item_new_name')
     item_description = data.get('item_description')
-    category = data.get('item_category')
     price = data.get('item_price')
     value = message.text
 
     await delete_only_items(item_old_name)
     await add_values_to_item(item_old_name, value, True)
-    await update_item(item_old_name, item_new_name, item_description, price, category)
+    await update_item(item_old_name, item_new_name, item_description, price)
 
     await message.answer(localize('admin.goods.update.success'), reply_markup=back('goods_management'))
     admin_info = await message.bot.get_chat(message.from_user.id)
@@ -326,7 +324,6 @@ async def update_item_no_infinity(call: CallbackQuery, state):
     item_old_name = data.get('item_old_name')
     item_new_name = data.get('item_new_name')
     item_description = data.get('item_description')
-    category = data.get('item_category')
     price = data.get('item_price')
     raw_values: list[str] = data.get("item_values", []) or []
 
@@ -355,7 +352,7 @@ async def update_item_no_infinity(call: CallbackQuery, state):
             skipped_db_dup += 1
 
     # Update meta after values are in place
-    await update_item(item_old_name, item_new_name, item_description, price, category)
+    await update_item(item_old_name, item_new_name, item_description, price)
 
     text_lines = [
         localize('admin.goods.update.success'),

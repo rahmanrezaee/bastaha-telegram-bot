@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 
 from bot.database.methods import (
-    get_bought_item_info, check_value, query_categories, query_user_bought_items, get_item_info_cached,
+    get_bought_item_info, check_value, query_all_items, query_user_bought_items, get_item_info_cached,
     select_item_values_amount_cached
 )
 from bot.database.methods.read import (
@@ -40,6 +40,10 @@ async def _render_item_page(target, state: FSMContext, item_name: str, back_data
     data = await state.get_data()
     if not back_data:
         back_data = data.get('item_back_data', 'gp_0')
+
+    # Reset purchase quantity for a new item view
+    if 'purchase_qty' in data:
+        await state.update_data(purchase_qty=1)
 
     item_info_data = await get_item_info_cached(item_name)
     if not item_info_data:
@@ -95,12 +99,15 @@ async def _render_item_page(target, state: FSMContext, item_name: str, back_data
 
     text_lines = [
         localize("shop.item.title", name=item_name),
-        localize("shop.item.description", description=item_info_data["description"]),
         price_line,
         quantity_line,
+        "",
+        localize("shop.item.description", description=item_info_data["description"]),
+        "",
+        localize("shop.item.delivery"),
     ]
     if reviews_enabled and avg_rating is not None:
-        text_lines.append(localize("review.avg_rating", rating=avg_rating, count=review_count_val))
+        text_lines.insert(3, localize("review.avg_rating", rating=avg_rating, count=review_count_val))
 
     text = "\n".join(text_lines)
 
@@ -119,120 +126,45 @@ async def _render_item_page(target, state: FSMContext, item_name: str, back_data
 @router.callback_query(F.data == "shop")
 async def shop_callback_handler(call: CallbackQuery, state: FSMContext):
     """
-    Show list of shop categories with lazy loading.
+    Show list of shop items with lazy loading.
     """
     metrics = get_metrics()
     if metrics:
         metrics.track_conversion("purchase_funnel", "view_shop", call.from_user.id)
 
-    paginator = LazyPaginator(query_categories, per_page=10)
+    paginator = LazyPaginator(query_all_items, per_page=10)
 
     # Pre-fetch page items to build index map and store in state
     page_items = await paginator.get_page(0)
-    items_index = {cat: idx for idx, cat in enumerate(page_items)}
+    items_index = {item["name"]: idx for idx, item in enumerate(page_items)}
+
+    from aiogram.types import InlineKeyboardButton
+    extra_row = [
+        InlineKeyboardButton(text="🔄 Refresh", callback_data="shop"),
+        InlineKeyboardButton(text="Sort: All", callback_data="noop")
+    ]
 
     markup = await lazy_paginated_keyboard(
         paginator=paginator,
-        item_text=lambda cat: cat,
-        item_callback=lambda cat: f"cat:{items_index[cat]}:{0}",
+        item_text=lambda item: f"📦 {item['name']} | ${item['price']:.2f} | 📦 {item['stock']}",
+        item_callback=lambda item: f"itm:{items_index[item['name']]}:{0}",
         page=0,
         back_cb="back_to_menu",
-        nav_cb_prefix="categories-page_",
-    )
-
-    await call.message.edit_text(localize("shop.categories.title"), reply_markup=markup)
-
-    await state.update_data(
-        categories_paginator=paginator.get_state(),
-        category_page_items=list(page_items),
-    )
-    await state.set_state(ShopStates.viewing_categories)
-
-
-@router.callback_query(F.data.startswith('categories-page_'))
-async def navigate_categories(call: CallbackQuery, state: FSMContext):
-    """
-    Pagination across shop categories with cache.
-    """
-    parts = call.data.split('_', 1)
-    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-
-    data = await state.get_data()
-    paginator_state = data.get('categories_paginator')
-
-    paginator = LazyPaginator(
-        query_categories,
-        per_page=10,
-        state=paginator_state
-    )
-
-    # Pre-fetch page items to build index map and store in state
-    page_items = await paginator.get_page(page)
-    items_index = {cat: idx for idx, cat in enumerate(page_items)}
-
-    markup = await lazy_paginated_keyboard(
-        paginator=paginator,
-        item_text=lambda cat: cat,
-        item_callback=lambda cat: f"cat:{items_index[cat]}:{page}",
-        page=page,
-        back_cb="back_to_menu",
-        nav_cb_prefix="categories-page_"
-    )
-
-    await call.message.edit_text(localize('shop.categories.title'), reply_markup=markup)
-
-    await state.update_data(
-        categories_paginator=paginator.get_state(),
-        category_page_items=list(page_items),
-    )
-
-
-@router.callback_query(F.data.startswith('cat:'))
-async def items_list_callback_handler(call: CallbackQuery, state: FSMContext):
-    """
-    Show items of selected category.
-    Parse index and page from cat:{index}:{page}, look up category name from state.
-    """
-    parts = call.data.split(':')
-    idx = int(parts[1])
-    cat_page = int(parts[2]) if len(parts) > 2 else 0
-
-    data = await state.get_data()
-    category_page_items = data.get('category_page_items', [])
-
-    if idx < 0 or idx >= len(category_page_items):
-        await call.answer(localize("shop.item.not_found"), show_alert=True)
-        return
-
-    category_name = category_page_items[idx]
-    back_data = f"categories-page_{cat_page}"
-
-    from bot.database.methods.lazy_queries import query_items_in_category
-
-    query_func = partial(query_items_in_category, category_name)
-    paginator = LazyPaginator(query_func, per_page=10)
-
-    # Pre-fetch page items to build index map and store in state
-    page_items = await paginator.get_page(0)
-    items_index = {item: i for i, item in enumerate(page_items)}
-
-    markup = await lazy_paginated_keyboard(
-        paginator=paginator,
-        item_text=lambda item: item,
-        item_callback=lambda item: f"itm:{items_index[item]}:0",
-        page=0,
-        back_cb=back_data,
         nav_cb_prefix="gp_",
+        back_text="🏠 Home",
+        extra_row_above_nav=extra_row
     )
 
     await call.message.edit_text(localize("shop.goods.choose"), reply_markup=markup)
 
     await state.update_data(
         goods_paginator=paginator.get_state(),
-        current_category=category_name,
         goods_page_items=list(page_items),
     )
     await state.set_state(ShopStates.viewing_goods)
+
+
+
 
 
 @router.callback_query(F.data.startswith('gp_'), ShopStates.viewing_goods)
@@ -245,27 +177,29 @@ async def navigate_goods(call: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     paginator_state = data.get('goods_paginator')
-    category_name = data.get('current_category', '')
+    back_data = "back_to_menu"
 
-    categories_page = data.get('categories_last_viewed_page', 0)
-    back_data = f"categories-page_{categories_page}"
-
-    from bot.database.methods.lazy_queries import query_items_in_category
-
-    query_func = partial(query_items_in_category, category_name)
-    paginator = LazyPaginator(query_func, per_page=10, state=paginator_state)
+    paginator = LazyPaginator(query_all_items, per_page=10, state=paginator_state)
 
     # Pre-fetch page items to build index map and store in state
     page_items = await paginator.get_page(current_index)
-    items_index = {item: i for i, item in enumerate(page_items)}
+    items_index = {item["name"]: i for i, item in enumerate(page_items)}
+
+    from aiogram.types import InlineKeyboardButton
+    extra_row = [
+        InlineKeyboardButton(text="🔄 Refresh", callback_data="shop"),
+        InlineKeyboardButton(text="Sort: All", callback_data="noop")
+    ]
 
     markup = await lazy_paginated_keyboard(
         paginator=paginator,
-        item_text=lambda item: item,
-        item_callback=lambda item: f"itm:{items_index[item]}:{current_index}",
+        item_text=lambda item: f"📦 {item['name']} | ${item['price']:.2f} | 📦 {item['stock']}",
+        item_callback=lambda item: f"itm:{items_index[item['name']]}:{current_index}",
         page=current_index,
         back_cb=back_data,
         nav_cb_prefix="gp_",
+        back_text="🏠 Home",
+        extra_row_above_nav=extra_row
     )
 
     await call.message.edit_text(localize("shop.goods.choose"), reply_markup=markup)
@@ -293,7 +227,7 @@ async def item_info_callback_handler(call: CallbackQuery, state: FSMContext):
         await call.answer(localize("shop.item.not_found"), show_alert=True)
         return
 
-    item_name = goods_page_items[idx]
+    item_name = goods_page_items[idx]["name"]
     back_data = f"gp_{goods_page}"
 
     metrics = get_metrics()

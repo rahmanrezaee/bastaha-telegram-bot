@@ -411,9 +411,55 @@ async def successful_payment_handler(message: Message):
 
 @router.callback_query(F.data == "buy")
 async def buy_item_callback_handler(call: CallbackQuery, state: FSMContext):
-    """Processing the purchase of goods with full transactional security."""
+    """Show the payment selection screen."""
+    data = await state.get_data()
+    raw_item_name = data.get('csrf_item')
+
+    if not raw_item_name:
+        await call.answer(localize("middleware.security.invalid_csrf"), show_alert=True)
+        return
+
+    from bot.database.methods import get_item_info_cached
+    from bot.keyboards.inline import item_payment_keyboard
+
+    item_info_data = await get_item_info_cached(raw_item_name)
+    if not item_info_data:
+        await call.answer(localize("shop.item.not_found"), show_alert=True)
+        return
+
+    qty = data.get('purchase_qty', 1)
+    price = Decimal(str(item_info_data["price"])) * qty
+    
+    # Check promo
+    applied_promo = data.get('applied_promo')
+    if applied_promo:
+        promo_data = data.get('applied_promo_data', {})
+        if promo_data.get('discount_type') == 'percent':
+            discount = price * Decimal(str(promo_data.get('discount_value', 0))) / 100
+        else:
+            discount = min(Decimal(str(promo_data.get('discount_value', 0))), price)
+        price = (price - discount).quantize(Decimal("0.01"))
+
+    text = (
+        "Select Payment Method\n"
+        f"📦 {raw_item_name} x {qty}\n"
+        f"Total: ${price} {EnvKeys.PAY_CURRENCY}"
+    )
+
+    markup = item_payment_keyboard(
+        item_name=raw_item_name,
+        has_crypto=bool(EnvKeys.CRYPTO_PAY_TOKEN),
+        has_fiat=bool(EnvKeys.TELEGRAM_PROVIDER_TOKEN),
+        has_stars=EnvKeys.STARS_PER_VALUE > 0
+    )
+
+    await call.message.edit_text(text, reply_markup=markup)
+
+
+@router.callback_query(F.data == "buy_from_balance")
+async def buy_from_balance_handler(call: CallbackQuery, state: FSMContext):
+    """Processing the purchase of goods from balance with full transactional security."""
     try:
-        # Get item name from state (stored when viewing item info)
         data = await state.get_data()
         raw_item_name = data.get('csrf_item')
 
@@ -445,6 +491,8 @@ async def buy_item_callback_handler(call: CallbackQuery, state: FSMContext):
             await call.answer(localize("errors.invalid_user"), show_alert=True)
             return
 
+        qty = data.get('purchase_qty', 1)
+
         # Show the processing indicator
         await call.answer(localize("shop.purchase.processing"))
 
@@ -452,10 +500,12 @@ async def buy_item_callback_handler(call: CallbackQuery, state: FSMContext):
         promo_code = data.get('applied_promo')
 
         # Execute a transactional purchase
+        from bot.database.methods import buy_item_transaction
         success, message, purchase_data = await buy_item_transaction(
             user_id,
             purchase_request.item_name,
             promo_code=promo_code,
+            qty=qty
         )
 
         if not success:
@@ -510,6 +560,7 @@ async def buy_item_callback_handler(call: CallbackQuery, state: FSMContext):
                 user_id=call.from_user.id,
                 value=safe_value,
                 currency=EnvKeys.PAY_CURRENCY,
+                count=qty,
             ),
             parse_mode='HTML',
             reply_markup=simple_buttons(buttons),
@@ -534,3 +585,52 @@ async def buy_item_callback_handler(call: CallbackQuery, state: FSMContext):
             localize("errors.something_wrong"),
             show_alert=True
         )
+
+@router.callback_query(F.data == "change_qty")
+async def change_qty_handler(call: CallbackQuery, state: FSMContext):
+    """Prompt user to change quantity."""
+    data = await state.get_data()
+    raw_item_name = data.get('csrf_item')
+    if not raw_item_name:
+        await call.answer("Session expired.", show_alert=True)
+        return
+        
+    await state.set_state(BalanceStates.waiting_amount) # reuse or create new? Let's use ShopStates instead
+    
+    from bot.states.shop_state import ShopStates
+    await state.set_state(ShopStates.changing_qty)
+    from bot.keyboards import back
+    await call.message.edit_text("Enter the quantity you want to purchase:", reply_markup=back("buy"))
+
+@router.message(ShopStates.changing_qty, F.text.regexp(r'^\d+$'))
+async def process_qty_change(message: Message, state: FSMContext):
+    qty = int(message.text)
+    if qty < 1:
+        await message.answer("Quantity must be at least 1.")
+        return
+        
+    await state.update_data(purchase_qty=qty)
+    
+    # We need to simulate the "buy" callback or just call buy_item_callback_handler directly
+    # To keep it simple, we can just redirect to the payment screen logic
+    from bot.handlers.user.balance_and_payment import buy_item_callback_handler
+    
+    # We create a mock callback query object
+    class MockCall:
+        def __init__(self, msg):
+            self.message = msg
+            self.from_user = msg.from_user
+            self.data = "buy"
+            self.id = "mock"
+            
+        async def answer(self, text=None, show_alert=False):
+            if text:
+                await self.message.answer(text)
+                
+    # Send a new message with the payment screen instead of edit_text since we got a text message
+    class MockCallMessage(MockCall):
+        async def edit_text(self, text, reply_markup=None):
+            await self.message.answer(text, reply_markup=reply_markup)
+            
+    await buy_item_callback_handler(MockCallMessage(message), state)
+

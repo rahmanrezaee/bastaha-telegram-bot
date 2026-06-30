@@ -14,7 +14,7 @@ class Permission:
     BROADCAST       = 1 << 1   #   2 — mass messaging
     SETTINGS_MANAGE = 1 << 2   #   4 — bot settings (maintenance, etc.)
     USERS_MANAGE    = 1 << 3   #   8 — view/block/unblock users, referrals, purchases
-    CATALOG_MANAGE  = 1 << 4   #  16 — categories, positions, items/goods CRUD
+    CATALOG_MANAGE  = 1 << 4   #  16 — positions, items/goods CRUD
     ADMINS_MANAGE   = 1 << 5   #  32 — role CRUD, role assignment
     OWN             = 1 << 6   #  64 — owner-only operations
     STATS_VIEW      = 1 << 7   # 128 — statistics, logs, bought-item search
@@ -142,19 +142,6 @@ class User(Database.BASE):
         return str(self.telegram_id)
 
 
-class Categories(Database.BASE):
-    __tablename__ = 'categories'
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), unique=True, nullable=False)
-    items = relationship("Goods", back_populates="category", lazy='raise')
-
-    def __init__(self, name: str = None, **kw: Any):
-        super().__init__(**kw)
-        if name is not None:
-            self.name = name
-
-    def __str__(self):
-        return self.name or ""
 
 
 class Goods(Database.BASE):
@@ -163,11 +150,9 @@ class Goods(Database.BASE):
     name = Column(String(100), unique=True, nullable=False)
     price = Column(Numeric(12, 2), nullable=False)
     description = Column(Text, nullable=False)
-    category_id = Column(Integer, ForeignKey('categories.id', ondelete="CASCADE"), nullable=False, index=True)
-    category = relationship("Categories", back_populates="items", lazy='raise')
     values = relationship("ItemValues", back_populates="item", lazy='raise')
 
-    def __init__(self, name: str = None, price=None, description: str = None, category_id: int = None, **kw: Any):
+    def __init__(self, name: str = None, price=None, description: str = None, **kw: Any):
         super().__init__(**kw)
         if name is not None:
             self.name = name
@@ -175,8 +160,6 @@ class Goods(Database.BASE):
             self.price = price
         if description is not None:
             self.description = description
-        if category_id is not None:
-            self.category_id = category_id
 
     def __str__(self):
         return self.name or ""
@@ -368,7 +351,6 @@ class PromoCodes(Database.BASE):
     max_uses = Column(Integer, nullable=False, default=0)  # 0 = unlimited
     current_uses = Column(Integer, nullable=False, default=0)
     expires_at = Column(DateTime(timezone=True), nullable=True)
-    category_id = Column(Integer, ForeignKey('categories.id', ondelete='SET NULL'), nullable=True)
     item_id = Column(Integer, ForeignKey('goods.id', ondelete='SET NULL'), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -386,16 +368,6 @@ class PromoCodeUsages(Database.BASE):
     __table_args__ = (UniqueConstraint('promo_id', 'user_id', name='uq_promo_usage_per_user'),)
 
 
-class CartItems(Database.BASE):
-    __tablename__ = 'cart_items'
-    id = Column(Integer, primary_key=True)
-    user_id = Column(BigInteger, ForeignKey('users.telegram_id', ondelete='CASCADE'), nullable=False, index=True)
-    item_name = Column(String(100), nullable=False)
-    promo_code = Column(String(50), nullable=True)
-    added_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-    def __str__(self):
-        return self.item_name or ""
 
 
 class Reviews(Database.BASE):

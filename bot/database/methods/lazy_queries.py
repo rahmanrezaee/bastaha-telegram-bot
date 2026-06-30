@@ -3,43 +3,41 @@ from sqlalchemy import func, select
 from sqlalchemy import desc
 from bot.database import Database
 from bot.database.models import (
-    Categories, Goods, User, BoughtGoods, ItemValues,
+    Goods, User, BoughtGoods, ItemValues,
     ReferralEarnings, Role, Operations
 )
 from bot.database.models.main import PromoCodes, Reviews
 
 
-async def query_categories(offset: int = 0, limit: int = 10, count_only: bool = False) -> Any:
-    """Query categories with pagination"""
+async def query_all_items(offset: int = 0, limit: int = 10, count_only: bool = False) -> Any:
+    """Query all items with pagination (returns name, price, stock)"""
     async with Database().session() as s:
         if count_only:
-            return (await s.execute(select(func.count(Categories.id)))).scalar() or 0
-        result = await s.execute(
-            select(Categories.name)
-            .order_by(Categories.name.asc())
+            return (await s.execute(select(func.count(Goods.id)))).scalar() or 0
+        
+        # Subquery to count items
+        stock_subq = (
+            select(
+                ItemValues.item_id,
+                func.count(ItemValues.id).label("stock")
+            )
+            .group_by(ItemValues.item_id)
+            .subquery()
+        )
+        
+        stmt = (
+            select(
+                Goods.name,
+                Goods.price,
+                func.coalesce(stock_subq.c.stock, 0).label("stock")
+            )
+            .outerjoin(stock_subq, Goods.id == stock_subq.c.item_id)
+            .order_by(Goods.name.asc())
             .offset(offset)
             .limit(limit)
         )
-        return [row[0] for row in result.all()]
-
-
-async def query_items_in_category(category_name: str, offset: int = 0, limit: int = 10,
-                                  count_only: bool = False) -> Any:
-    """Query items in category with pagination"""
-    async with Database().session() as s:
-        cat_id = (await s.execute(
-            select(Categories.id).where(Categories.name == category_name)
-        )).scalar()
-        if not cat_id:
-            return 0 if count_only else []
-        query = select(Goods.name).where(Goods.category_id == cat_id)
-        if count_only:
-            count_result = await s.execute(select(func.count()).select_from(query.subquery()))
-            return count_result.scalar() or 0
-        result = await s.execute(
-            query.order_by(Goods.name.asc()).offset(offset).limit(limit)
-        )
-        return [row[0] for row in result.all()]
+        result = await s.execute(stmt)
+        return [{"name": row.name, "price": float(row.price), "stock": row.stock} for row in result.all()]
 
 
 async def query_user_bought_items(user_id: int, offset: int = 0, limit: int = 10, count_only: bool = False) -> Any:

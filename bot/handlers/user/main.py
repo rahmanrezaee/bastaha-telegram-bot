@@ -10,7 +10,6 @@ from bot.database.methods import (
     select_max_role_id, create_user, check_role, check_user,
     select_user_operations, select_user_items, check_user_cached
 )
-from bot.database.methods.read import get_cart_count
 from bot.database.methods.lazy_queries import query_user_operations_history
 from bot.handlers.other import check_sub_channel, _parse_channel_username
 from bot.keyboards import main_menu, back, profile_keyboard, check_sub
@@ -131,9 +130,8 @@ async def profile_callback_handler(call: CallbackQuery, state: FSMContext):
     overall_balance = sum(operations) if operations else 0
     items = await select_user_items(user_id)
     referral = EnvKeys.REFERRAL_PERCENT
-    cart_count = await get_cart_count(user_id)
 
-    markup = profile_keyboard(referral, items, cart_count=cart_count)
+    markup = profile_keyboard(referral, items)
     text = (
         f"{localize('profile.caption', name=tg_user.first_name, id=user_id)}\n"
         f"{localize('profile.id', id=user_id)}\n"

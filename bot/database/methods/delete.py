@@ -1,9 +1,9 @@
 from sqlalchemy import func, select, delete as sa_delete
 
-from bot.database.methods.read import invalidate_item_cache, invalidate_category_cache
+from bot.database.methods.read import invalidate_item_cache
 from bot.database.methods.cache_utils import safe_create_task
-from bot.database.models import Database, Goods, ItemValues, Categories, Role, User
-from bot.database.models.main import PromoCodes, CartItems, Reviews
+from bot.database.models import Database, Goods, ItemValues, Role, User
+from bot.database.models.main import PromoCodes, Reviews
 from bot.database.methods.audit import log_audit
 
 
@@ -33,26 +33,7 @@ async def delete_item_from_position(item_id: int) -> None:
         await s.execute(sa_delete(ItemValues).where(ItemValues.id == item_id))
 
 
-async def delete_category(category_name: str) -> None:
-    """Delete a category and all products/stock inside it (CASCADE handles items)."""
-    async with Database().session() as s:
-        result = await s.execute(select(Categories).where(Categories.name == category_name))
-        cat = result.scalars().first()
-        if not cat:
-            return
-        items_result = await s.execute(select(Goods.name).where(Goods.category_id == cat.id))
-        items = items_result.all()
-        if items:
-            item_names = [i[0] for i in items]
-            await log_audit(
-                "cascade_delete",
-                resource_type="Category",
-                resource_id=category_name,
-                details=f"deleted items: {item_names}",
-            )
-        await s.delete(cat)
 
-    safe_create_task(invalidate_category_cache(category_name))
 
 
 async def delete_role(role_id: int) -> tuple[bool, str | None]:
@@ -86,21 +67,7 @@ async def delete_promo_code(promo_id: int) -> bool:
         return False
 
 
-async def remove_from_cart(cart_item_id: int, user_id: int = None) -> bool:
-    """Remove a single item from cart by CartItems ID."""
-    async with Database().session() as s:
-        clause = CartItems.id == cart_item_id
-        if user_id is not None:
-            clause = clause & (CartItems.user_id == user_id)
-        result = await s.execute(sa_delete(CartItems).where(clause))
-        return result.rowcount > 0
 
-
-async def clear_cart(user_id: int) -> int:
-    """Clear all cart items for a user. Returns count deleted."""
-    async with Database().session() as s:
-        result = await s.execute(sa_delete(CartItems).where(CartItems.user_id == user_id))
-        return result.rowcount
 
 
 

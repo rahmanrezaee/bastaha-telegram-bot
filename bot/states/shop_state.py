@@ -8,3 +8,4 @@ class ShopStates(StatesGroup):
     viewing_goods = State()
     viewing_bought_items = State()
     viewing_categories = State()
+    changing_qty = State()
