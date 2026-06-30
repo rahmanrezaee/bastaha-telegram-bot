@@ -13,7 +13,7 @@ from bot.database.models import Permission
 from bot.database.methods import (
     select_today_users, get_user_count, select_today_orders,
     select_all_orders, select_today_operations, select_users_balance, select_all_operations,
-    select_count_items, select_count_goods, select_count_categories, select_count_bought_items,
+    select_count_items, select_count_goods, select_count_bought_items,
     select_bought_item, check_user_referrals, check_role_name_by_id, select_user_items,
     select_user_operations, query_all_users, check_user_cached
 )
@@ -131,7 +131,7 @@ async def statistics_callback_handler(call: CallbackQuery):
             all_topups=await select_all_operations(),
             items=global_stats['total_items'],
             goods=global_stats['total_goods'],
-            categories=await select_count_categories(),
+
             sold_count=await select_count_bought_items(),
             currency=EnvKeys.PAY_CURRENCY
         )
@@ -153,7 +153,7 @@ async def statistics_callback_handler(call: CallbackQuery):
             all_topups=await select_all_operations(),
             items=await select_count_items(),
             goods=await select_count_goods(),
-            categories=await select_count_categories(),
+
             sold_count=await select_count_bought_items(),
             currency=EnvKeys.PAY_CURRENCY
         )
