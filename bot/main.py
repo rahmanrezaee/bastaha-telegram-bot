@@ -8,7 +8,6 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 
-from bot.database.methods import check_category_cached
 from bot.handlers.admin.shop_management_states import init_stats_cache
 from bot.misc import EnvKeys
 from bot.handlers import register_all_handlers
@@ -188,12 +187,6 @@ async def warm_up_critical_caches():
         # Warming up the base stats
         await get_user_count_cached()
         await select_admins_cached()
-
-        # Warming up popular categories and products
-        from bot.database.methods import query_categories
-        categories = await query_categories(limit=5)
-        for category in categories:
-            await check_category_cached(category)
 
         logging.info("Critical caches warmed up successfully")
     except Exception as e:
