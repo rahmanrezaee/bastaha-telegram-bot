@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from bot.misc.caching import get_cache_manager
 from bot.logger_mesh import logger
 
@@ -38,7 +38,7 @@ async def daily_cleanup():
         now = datetime.now()
         next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
         if now >= next_run:
-            next_run = next_run.replace(day=next_run.day + 1)
+            next_run = next_run + timedelta(days=1)
 
         wait_seconds = (next_run - now).total_seconds()
         await asyncio.sleep(wait_seconds)
@@ -47,7 +47,7 @@ async def daily_cleanup():
         if cache:
             # Full invalidation of non-critical data
             await cache.invalidate_pattern("item:*")
-            await cache.invalidate_pattern("category:*")
+
             logger.info("Daily cache cleanup completed")
 
 

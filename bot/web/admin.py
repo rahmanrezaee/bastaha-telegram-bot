@@ -55,9 +55,9 @@ class LoginRateLimiter:
 _login_limiter = LoginRateLimiter()
 from bot.database.main import Database
 from bot.database.models.main import (
-    User, Role, Categories, Goods, ItemValues,
+    User, Role, Goods, ItemValues,
     BoughtGoods, Operations, Payments, ReferralEarnings,
-    AuditLog, PromoCodes, CartItems, Reviews,
+    AuditLog, PromoCodes, Reviews,
 )
 from bot.misc.metrics import get_metrics
 from bot.misc.caching import get_cache_manager
@@ -198,16 +198,8 @@ class RoleAdmin(AuditModelView, model=Role):
     }
 
 
-class CategoryAdmin(AuditModelView, model=Categories):
-    column_list = [Categories.name]
-    column_searchable_list = [Categories.name]
-    name = "Category"
-    name_plural = "Categories"
-    icon = "fa-solid fa-folder"
-
-
 class GoodsAdmin(AuditModelView, model=Goods):
-    column_list = [Goods.id, Goods.name, Goods.price, Goods.description, Goods.category_id]
+    column_list = [Goods.id, Goods.name, Goods.price, Goods.description]
     column_searchable_list = [Goods.name]
     column_sortable_list = [Goods.id, Goods.name, Goods.price]
     name = "Product"
@@ -309,20 +301,6 @@ class PromoCodeAdmin(AuditModelView, model=PromoCodes):
     icon = "fa-solid fa-tag"
 
 
-class CartItemsAdmin(ModelView, model=CartItems):
-    column_list = [CartItems.id, CartItems.user_id, CartItems.item_name, CartItems.added_at]
-    column_searchable_list = [CartItems.user_id, CartItems.item_name]
-    column_sortable_list = [CartItems.id, CartItems.added_at]
-    column_default_sort = (CartItems.id, True)
-    can_create = False
-    can_edit = False
-    can_delete = False
-    name = "Cart Item"
-    name_plural = "Cart Items"
-    icon = "fa-solid fa-cart-plus"
-
-
-
 class ReviewsAdmin(AuditModelView, model=Reviews):
     column_list = [Reviews.id, Reviews.user_id, Reviews.item_name,
                    Reviews.rating, Reviews.text, Reviews.created_at]
@@ -407,7 +385,6 @@ def create_admin_app() -> Starlette:
 
     admin.add_view(UserAdmin)
     admin.add_view(RoleAdmin)
-    admin.add_view(CategoryAdmin)
     admin.add_view(GoodsAdmin)
     admin.add_view(ItemValuesAdmin)
     admin.add_view(BoughtGoodsAdmin)
@@ -416,7 +393,6 @@ def create_admin_app() -> Starlette:
     admin.add_view(ReferralEarningsAdmin)
     admin.add_view(AuditLogAdmin)
     admin.add_view(PromoCodeAdmin)
-    admin.add_view(CartItemsAdmin)
     if EnvKeys.REVIEWS_ENABLED == "1":
         admin.add_view(ReviewsAdmin)
 
