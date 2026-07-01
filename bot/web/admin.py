@@ -319,6 +319,16 @@ class ResellerProvidersAdmin(AuditModelView, model=ResellerProviders):
                    ResellerProviders.is_active, ResellerProviders.markup_percent]
     column_searchable_list = [ResellerProviders.name]
     column_sortable_list = [ResellerProviders.id, ResellerProviders.name, ResellerProviders.markup_percent]
+    form_columns = [
+        ResellerProviders.name, ResellerProviders.base_url, ResellerProviders.api_key,
+        ResellerProviders.is_active, ResellerProviders.markup_percent,
+        ResellerProviders.products_url, ResellerProviders.products_path,
+        ResellerProviders.product_id_path, ResellerProviders.product_name_path,
+        ResellerProviders.product_price_path, ResellerProviders.product_stock_path,
+        ResellerProviders.purchase_url, ResellerProviders.purchase_method,
+        ResellerProviders.purchase_payload_template, ResellerProviders.purchase_headers,
+        ResellerProviders.purchase_order_id_path, ResellerProviders.purchase_credentials_path
+    ]
     name = "Reseller Provider"
     name_plural = "Reseller Providers"
     icon = "fa-solid fa-plug"
@@ -351,16 +361,599 @@ class ResellerSyncAdmin(BaseView):
     icon = "fa-solid fa-rotate"
 
     @expose("/sync_catalog", methods=["GET"])
-    async def sync_catalog_get(self, request: Request) -> RedirectResponse:
+    async def sync_catalog_get(self, request: Request) -> HTMLResponse:
         if not request.session.get("authenticated"):
             return RedirectResponse(url="/admin/login", status_code=303)
+        
+        from sqlalchemy import select
+        async with Database().session() as session:
+            res = await session.execute(select(ResellerProviders).order_by(ResellerProviders.name))
+            providers = res.scalars().all()
+            
+        providers_data = []
+        for p in providers:
+            providers_data.append({
+                "id": p.id,
+                "name": p.name,
+                "base_url": p.base_url,
+                "api_key": p.api_key,
+                "markup_percent": float(p.markup_percent),
+                "products_url": p.products_url or "",
+                "products_path": p.products_path or "",
+                "product_id_path": p.product_id_path or "",
+                "product_name_path": p.product_name_path or "",
+                "product_price_path": p.product_price_path or "",
+                "product_stock_path": p.product_stock_path or "",
+                "purchase_url": p.purchase_url or "",
+                "purchase_method": p.purchase_method or "POST",
+                "purchase_payload_template": p.purchase_payload_template or "",
+                "purchase_headers": p.purchase_headers or "",
+                "purchase_order_id_path": p.purchase_order_id_path or "",
+                "purchase_credentials_path": p.purchase_credentials_path or ""
+            })
+            
+        import json
+        html = get_sync_catalog_html(json.dumps(providers_data))
+        return HTMLResponse(html)
+
+    @expose("/preview_sync", methods=["POST"])
+    async def preview_sync(self, request: Request) -> JSONResponse:
+        if not request.session.get("authenticated"):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            
+        data = await request.json()
+        provider_id = data.get("provider_id")
+        
+        from sqlalchemy import select
+        from decimal import Decimal
+        async with Database().session() as session:
+            stmt = select(ResellerProviders).where(ResellerProviders.id == provider_id)
+            provider = (await session.execute(stmt)).scalar_one_or_none()
+            
+        if not provider:
+            return JSONResponse({"error": "Provider not found"}, status_code=404)
+            
+        # Temporarily apply mapping from request if sent, to allow live testing/tuning
+        temp_provider = ResellerProviders(
+            base_url=data.get("base_url", provider.base_url),
+            api_key=data.get("api_key", provider.api_key),
+            markup_percent=Decimal(str(data.get("markup_percent", provider.markup_percent))),
+            products_url=data.get("products_url", provider.products_url),
+            products_path=data.get("products_path", provider.products_path),
+            product_id_path=data.get("product_id_path", provider.product_id_path),
+            product_name_path=data.get("product_name_path", provider.product_name_path),
+            product_price_path=data.get("product_price_path", provider.product_price_path),
+            product_stock_path=data.get("product_stock_path", provider.product_stock_path)
+        )
+        
+        import aiohttp
+        import json
+        headers = {"Authorization": f"Bearer {temp_provider.api_key}"}
+        if data.get("purchase_headers"):
+            try:
+                headers = json.loads(data.get("purchase_headers").replace("{api_key}", temp_provider.api_key))
+            except Exception:
+                pass
+                
+        url = f"{temp_provider.base_url.rstrip('/')}/{temp_provider.products_url.lstrip('/')}"
+        
+        raw_text = ""
+        raw_json = None
+        parsed_products = []
+        error = None
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers) as resp:
+                    raw_text = await resp.text()
+                    try:
+                        raw_json = json.loads(raw_text)
+                    except Exception:
+                        raw_json = {"error": "Response is not valid JSON", "raw_response": raw_text}
+                        
+                    if resp.status == 200 and isinstance(raw_json, (dict, list)):
+                        from bot.misc.services.reseller.client import DynamicResellerClient
+                        client = DynamicResellerClient(temp_provider)
+                        products_list = client._get_nested(raw_json, temp_provider.products_path) if temp_provider.products_path else raw_json
+                        
+                        if not isinstance(products_list, list):
+                            if isinstance(products_list, dict):
+                                for k, v in products_list.items():
+                                    if isinstance(v, list):
+                                        products_list = v
+                                        break
+                                        
+                        if isinstance(products_list, list):
+                            for p in products_list:
+                                try:
+                                    p_id = str(client._get_nested(p, temp_provider.product_id_path or "id"))
+                                    p_name = str(client._get_nested(p, temp_provider.product_name_path or "name"))
+                                    p_price = float(str(client._get_nested(p, temp_provider.product_price_path or "price") or 0))
+                                    p_stock = int(client._get_nested(p, temp_provider.product_stock_path or "stock") or 0)
+                                    
+                                    markup = 1.0 + (float(temp_provider.markup_percent) / 100.0)
+                                    final_price = p_price * markup
+                                    
+                                    parsed_products.append({
+                                        "id": p_id,
+                                        "name": p_name,
+                                        "original_price": p_price,
+                                        "final_price": round(final_price, 2),
+                                        "stock": p_stock
+                                    })
+                                except Exception as e:
+                                    logger.error(f"Failed parsing item {p}: {e}")
+                        else:
+                            error = f"Located products is not a list. Path: {temp_provider.products_path}"
+                    else:
+                        error = f"HTTP Error status: {resp.status}"
+        except Exception as e:
+            error = f"Connection failed: {e}"
+            raw_json = {"error": str(e)}
+            
+        return JSONResponse({
+            "raw_response": raw_json,
+            "mapped_products": parsed_products,
+            "error": error
+        })
+
+    @expose("/run_sync", methods=["POST"])
+    async def run_sync(self, request: Request) -> JSONResponse:
+        if not request.session.get("authenticated"):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            
+        data = await request.json()
+        provider_id = data.get("provider_id")
+        
+        from sqlalchemy import select
+        from decimal import Decimal
+        async with Database().session() as session:
+            stmt = select(ResellerProviders).where(ResellerProviders.id == provider_id)
+            provider = (await session.execute(stmt)).scalar_one_or_none()
+            
+            if not provider:
+                return JSONResponse({"error": "Provider not found"}, status_code=404)
+                
+            provider.base_url = data.get("base_url", provider.base_url)
+            provider.api_key = data.get("api_key", provider.api_key)
+            provider.markup_percent = Decimal(str(data.get("markup_percent", provider.markup_percent)))
+            provider.products_url = data.get("products_url")
+            provider.products_path = data.get("products_path")
+            provider.product_id_path = data.get("product_id_path")
+            provider.product_name_path = data.get("product_name_path")
+            provider.product_price_path = data.get("product_price_path")
+            provider.product_stock_path = data.get("product_stock_path")
+            
+            provider.purchase_url = data.get("purchase_url")
+            provider.purchase_method = data.get("purchase_method", "POST")
+            provider.purchase_payload_template = data.get("purchase_payload_template")
+            provider.purchase_headers = data.get("purchase_headers")
+            provider.purchase_order_id_path = data.get("purchase_order_id_path")
+            provider.purchase_credentials_path = data.get("purchase_credentials_path")
+            
+            await session.commit()
+            
         from bot.misc.services.reseller import sync_reseller_products
         try:
             await sync_reseller_products()
-            return RedirectResponse(url="/admin/reseller-products/list", status_code=303)
+            return JSONResponse({"success": True})
         except Exception as e:
             logger.error(f"Catalog sync failed: {e}")
-            return RedirectResponse(url="/admin/reseller-products/list", status_code=303)
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def get_sync_catalog_html(providers_json: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sync API Products - Admin Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {{
+            font-family: 'Outfit', sans-serif;
+            background-color: #0b0f19;
+            background-image: radial-gradient(circle at top right, rgba(99, 102, 241, 0.12), transparent 400px),
+                              radial-gradient(circle at bottom left, rgba(168, 85, 247, 0.12), transparent 400px);
+        }}
+        .glass-panel {{
+            background: rgba(17, 24, 39, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }}
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col">
+    <header class="glass-panel sticky top-0 z-50 px-6 py-4 flex items-center justify-between border-b border-white/5">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-indigo-500/10 rounded-xl flex items-center justify-center border border-indigo-500/30">
+                <i class="fa-solid fa-rotate text-indigo-400 text-lg"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold text-white tracking-tight">Sync API Products</h1>
+                <p class="text-xs text-slate-400">Configure mappings, test API feeds, and synchronize upstream products</p>
+            </div>
+        </div>
+        <a href="/admin/reseller-products/list" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium rounded-xl transition duration-200 flex items-center gap-2 border border-white/5">
+            <i class="fa-solid fa-arrow-left"></i> Back to Catalog
+        </a>
+    </header>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <section class="lg:col-span-5 flex flex-col gap-6">
+            <div class="glass-panel p-6 rounded-2xl flex flex-col gap-5">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                    <i class="fa-solid fa-sliders text-indigo-400"></i> Select Provider & Parameters
+                </h2>
+                
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 mb-2 uppercase">Reseller Provider</label>
+                    <select id="provider-select" onchange="onProviderChange()" class="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 transition">
+                        <option value="">-- Choose Provider --</option>
+                    </select>
+                </div>
+
+                <div id="mapping-fields" class="hidden flex flex-col gap-5">
+                    <div class="border-t border-white/5 pt-4">
+                        <h3 class="text-xs font-bold text-indigo-400 uppercase tracking-wider mb-3">Connection</h3>
+                        <div class="grid grid-cols-1 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Base URL</label>
+                                <input type="text" id="base_url" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="https://api.provider.com">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">API Key / Token</label>
+                                <input type="password" id="api_key" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Markup Percentage (%)</label>
+                                <input type="number" id="markup_percent" step="0.01" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="0.00">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-white/5 pt-4">
+                        <h3 class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-3">Products Sync Config</h3>
+                        <div class="grid grid-cols-1 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Products URL Path</label>
+                                <input type="text" id="products_url" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="/api/v1/products">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Products Selector (JSON Path to list)</label>
+                                <input type="text" id="products_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="data.products (leave empty if root list)">
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">ID Path</label>
+                                    <input type="text" id="product_id_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="id">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Name Path</label>
+                                    <input type="text" id="product_name_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="name">
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Price Path</label>
+                                    <input type="text" id="product_price_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="price">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Stock Path</label>
+                                    <input type="text" id="product_stock_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="stock">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-white/5 pt-4">
+                        <h3 class="text-xs font-bold text-purple-400 uppercase tracking-wider mb-3">Order / Purchase API Config</h3>
+                        <div class="grid grid-cols-1 gap-3">
+                            <div class="grid grid-cols-3 gap-2">
+                                <div class="col-span-2">
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Purchase URL Path</label>
+                                    <input type="text" id="purchase_url" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="/api/v1/orders">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Method</label>
+                                    <select id="purchase_method" class="w-full bg-slate-955 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                                        <option value="POST">POST</option>
+                                        <option value="GET">GET</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Custom Headers (JSON)</label>
+                                <textarea id="purchase_headers" rows="2" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500" placeholder='{{"Authorization": "Bearer {{api_key}}", "Idempotency-Key": "{{idempotency_key}}"}}'></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Payload Template (JSON)</label>
+                                <textarea id="purchase_payload_template" rows="2" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500" placeholder='{{"product_id": "{{product_id}}", "quantity": {{quantity}}}}'></textarea>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Order Code/ID Path</label>
+                                    <input type="text" id="purchase_order_id_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="code">
+                                </div>
+                                <div>
+                                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Credentials Path</label>
+                                    <input type="text" id="purchase_credentials_path" class="w-full bg-slate-955/60 border border-white/5 rounded-lg px-2 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="credentials">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="border-t border-white/5 pt-4 flex gap-3">
+                        <button type="button" onclick="getPreview()" class="flex-1 py-3 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/10">
+                            <i class="fa-solid fa-magnifying-glass"></i> Get Raw Data & Preview
+                        </button>
+                        <button type="button" onclick="runSync()" class="py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl transition duration-150 flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/10">
+                            <i class="fa-solid fa-cloud-arrow-up"></i> Save & Sync DB
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="lg:col-span-7 flex flex-col gap-6">
+            <div class="glass-panel p-6 rounded-2xl flex-1 flex flex-col gap-4 min-h-[500px]">
+                <div class="flex items-center justify-between border-b border-white/5 pb-2">
+                    <div class="flex gap-2">
+                        <button id="tab-preview" onclick="switchTab('preview')" class="px-4 py-2 border-b-2 border-indigo-500 text-indigo-400 font-semibold text-xs uppercase tracking-wider transition font-bold">
+                            Mapped Objects (Preview)
+                        </button>
+                        <button id="tab-raw" onclick="switchTab('raw')" class="px-4 py-2 border-b-2 border-transparent text-slate-400 font-semibold text-xs uppercase tracking-wider transition hover:text-slate-200">
+                            Raw API Response
+                        </button>
+                    </div>
+                    <span id="results-count" class="text-xs text-slate-500 font-medium">No results loaded</span>
+                </div>
+
+                <div id="loader" class="hidden flex-1 flex flex-col items-center justify-center gap-3">
+                    <div class="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                    <p class="text-sm text-slate-400">Requesting provider API feed...</p>
+                </div>
+
+                <div id="placeholder-msg" class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-500 text-center p-8">
+                    <i class="fa-solid fa-plug-circle-exclamation text-4xl mb-2 text-slate-600"></i>
+                    <p class="text-sm font-semibold">Select a reseller provider, verify configurations, and click "Get Raw Data & Preview" to start.</p>
+                </div>
+
+                <div id="preview-container" class="hidden flex-1 overflow-y-auto max-h-[700px] flex flex-col gap-3">
+                    <div id="product-cards-grid" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+                </div>
+
+                <div id="raw-container" class="hidden flex-1 overflow-auto max-h-[700px] bg-slate-950 rounded-xl p-4 border border-white/5">
+                    <pre id="raw-json-block" class="text-[11px] font-mono text-emerald-400 whitespace-pre-wrap"></pre>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const providers = {providers_json};
+        let currentTab = 'preview';
+
+        window.addEventListener('DOMContentLoaded', () => {{
+            const select = document.getElementById('provider-select');
+            providers.forEach(p => {{
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name;
+                select.appendChild(opt);
+            }});
+        }});
+
+        function onProviderChange() {{
+            const select = document.getElementById('provider-select');
+            const fields = document.getElementById('mapping-fields');
+            const placeholder = document.getElementById('placeholder-msg');
+            
+            if (!select.value) {{
+                fields.classList.add('hidden');
+                placeholder.classList.remove('hidden');
+                return;
+            }}
+
+            const provider = providers.find(p => p.id == select.value);
+            if (provider) {{
+                fields.classList.remove('hidden');
+                
+                document.getElementById('base_url').value = provider.base_url;
+                document.getElementById('api_key').value = provider.api_key;
+                document.getElementById('markup_percent').value = provider.markup_percent;
+                document.getElementById('products_url').value = provider.products_url;
+                document.getElementById('products_path').value = provider.products_path;
+                document.getElementById('product_id_path').value = provider.product_id_path;
+                document.getElementById('product_name_path').value = provider.product_name_path;
+                document.getElementById('product_price_path').value = provider.product_price_path;
+                document.getElementById('product_stock_path').value = provider.product_stock_path;
+                
+                document.getElementById('purchase_url').value = provider.purchase_url;
+                document.getElementById('purchase_method').value = provider.purchase_method;
+                document.getElementById('purchase_headers').value = provider.purchase_headers;
+                document.getElementById('purchase_payload_template').value = provider.purchase_payload_template;
+                document.getElementById('purchase_order_id_path').value = provider.purchase_order_id_path;
+                document.getElementById('purchase_credentials_path').value = provider.purchase_credentials_path;
+            }}
+        }}
+
+        function switchTab(tab) {{
+            currentTab = tab;
+            const tabPreview = document.getElementById('tab-preview');
+            const tabRaw = document.getElementById('tab-raw');
+            const containerPreview = document.getElementById('preview-container');
+            const containerRaw = document.getElementById('raw-container');
+
+            if (tab === 'preview') {{
+                tabPreview.className = "px-4 py-2 border-b-2 border-indigo-500 text-indigo-400 font-semibold text-xs uppercase tracking-wider transition font-bold";
+                tabRaw.className = "px-4 py-2 border-b-2 border-transparent text-slate-400 font-semibold text-xs uppercase tracking-wider transition hover:text-slate-200";
+                
+                if (document.getElementById('loader').classList.contains('hidden')) {{
+                    containerPreview.classList.remove('hidden');
+                    containerRaw.classList.add('hidden');
+                }}
+            }} else {{
+                tabRaw.className = "px-4 py-2 border-b-2 border-indigo-500 text-indigo-400 font-semibold text-xs uppercase tracking-wider transition font-bold";
+                tabPreview.className = "px-4 py-2 border-b-2 border-transparent text-slate-400 font-semibold text-xs uppercase tracking-wider transition hover:text-slate-200";
+                
+                if (document.getElementById('loader').classList.contains('hidden')) {{
+                    containerRaw.classList.remove('hidden');
+                    containerPreview.classList.add('hidden');
+                }}
+            }}
+        }}
+
+        async function getPreview() {{
+            const select = document.getElementById('provider-select');
+            if (!select.value) return;
+
+            const loader = document.getElementById('loader');
+            const placeholder = document.getElementById('placeholder-msg');
+            const previewContainer = document.getElementById('preview-container');
+            const rawContainer = document.getElementById('raw-container');
+            const resultsCount = document.getElementById('results-count');
+
+            placeholder.classList.add('hidden');
+            previewContainer.classList.add('hidden');
+            rawContainer.classList.add('hidden');
+            loader.classList.remove('hidden');
+            resultsCount.textContent = 'Loading...';
+
+            const payload = {{
+                provider_id: parseInt(select.value),
+                base_url: document.getElementById('base_url').value,
+                api_key: document.getElementById('api_key').value,
+                markup_percent: parseFloat(document.getElementById('markup_percent').value || 0),
+                products_url: document.getElementById('products_url').value,
+                products_path: document.getElementById('products_path').value,
+                product_id_path: document.getElementById('product_id_path').value,
+                product_name_path: document.getElementById('product_name_path').value,
+                product_price_path: document.getElementById('product_price_path').value,
+                product_stock_path: document.getElementById('product_stock_path').value,
+                purchase_headers: document.getElementById('purchase_headers').value
+            }};
+
+            try {{
+                const resp = await fetch('/admin/preview_sync', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(payload)
+                }});
+                const data = await resp.json();
+                
+                loader.classList.add('hidden');
+
+                if (data.error) {{
+                    resultsCount.innerHTML = `<span class="text-rose-400 font-bold"><i class="fa-solid fa-triangle-exclamation"></i> Error: ${{data.error}}</span>`;
+                }} else {{
+                    resultsCount.textContent = `${{data.mapped_products.length}} items mapped`;
+                }}
+
+                document.getElementById('raw-json-block').textContent = JSON.stringify(data.raw_response, null, 2);
+
+                const grid = document.getElementById('product-cards-grid');
+                grid.innerHTML = '';
+                
+                if (data.mapped_products && data.mapped_products.length > 0) {{
+                    data.mapped_products.forEach(p => {{
+                        const card = document.createElement('div');
+                        card.className = "bg-slate-900/60 border border-white/5 rounded-xl p-4 flex flex-col justify-between gap-3 hover:border-indigo-500/20 transition";
+                        card.innerHTML = `
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="text-[10px] font-bold font-mono text-slate-500 uppercase">ID: ${{p.id}}</span>
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${{p.stock > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}}">
+                                        Stock: ${{p.stock}}
+                                    </span>
+                                </div>
+                                <h4 class="text-xs font-bold text-slate-200 line-clamp-1">${{p.name}}</h4>
+                            </div>
+                            <div class="flex items-end justify-between pt-2 border-t border-white/5">
+                                <div class="flex flex-col">
+                                    <span class="text-[9px] text-slate-500 font-semibold uppercase">Original Price</span>
+                                    <span class="text-xs font-mono text-slate-400">$${{p.original_price}}</span>
+                                </div>
+                                <div class="flex flex-col items-end">
+                                    <span class="text-[9px] text-indigo-400 font-bold uppercase">Final Price (Markup)</span>
+                                    <span class="text-sm font-extrabold text-white font-mono">$${{p.final_price}}</span>
+                                </div>
+                            </div>
+                        `;
+                        grid.appendChild(card);
+                    }});
+                }} else {{
+                    grid.innerHTML = `
+                        <div class="col-span-full py-8 text-center text-slate-500 text-xs">
+                            No products mapped. Check that your path selectors match the API response structure.
+                        </div>
+                    `;
+                }}
+
+                if (currentTab === 'preview') {{
+                    previewContainer.classList.remove('hidden');
+                }} else {{
+                    rawContainer.classList.remove('hidden');
+                }}
+
+            }} catch(err) {{
+                loader.classList.add('hidden');
+                resultsCount.textContent = 'Connection failed';
+                alert('Connection error: ' + err.message);
+            }}
+        }}
+
+        async function runSync() {{
+            const select = document.getElementById('provider-select');
+            if (!select.value) return;
+
+            const confirmSync = confirm("This will save the current mappings to the database and run a full synchronization task to update your live Telegram shop catalog. Proceed?");
+            if (!confirmSync) return;
+
+            const payload = {{
+                provider_id: parseInt(select.value),
+                base_url: document.getElementById('base_url').value,
+                api_key: document.getElementById('api_key').value,
+                markup_percent: parseFloat(document.getElementById('markup_percent').value || 0),
+                products_url: document.getElementById('products_url').value,
+                products_path: document.getElementById('products_path').value,
+                product_id_path: document.getElementById('product_id_path').value,
+                product_name_path: document.getElementById('product_name_path').value,
+                product_price_path: document.getElementById('product_price_path').value,
+                product_stock_path: document.getElementById('product_stock_path').value,
+                
+                purchase_url: document.getElementById('purchase_url').value,
+                purchase_method: document.getElementById('purchase_method').value,
+                purchase_headers: document.getElementById('purchase_headers').value,
+                purchase_payload_template: document.getElementById('purchase_payload_template').value,
+                purchase_order_id_path: document.getElementById('purchase_order_id_path').value,
+                purchase_credentials_path: document.getElementById('purchase_credentials_path').value
+            }};
+
+            try {{
+                const resp = await fetch('/admin/run_sync', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(payload)
+                }});
+                const data = await resp.json();
+                
+                if (data.success) {{
+                    alert("Synchronization succeeded! Your local catalog has been successfully updated.");
+                    window.location.href = '/admin/reseller-products/list';
+                }} else {{
+                    alert("Error running synchronization: " + (data.error || "Unknown error"));
+                }}
+            }} catch(err) {{
+                alert("Request failed: " + err.message);
+            }}
+        }}
+    </script>
+</body>
+</html>"""
 
 
 # Health & Metrics Endpoints

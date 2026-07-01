@@ -396,6 +396,22 @@ class ResellerProviders(Database.BASE):
     is_active = Column(Boolean, nullable=False, default=True, index=True)
     markup_percent = Column(Numeric(6, 2), nullable=False, default=0.00)
 
+    # Dynamic Products Sync Mapping Config
+    products_url = Column(String(255), nullable=True)
+    products_path = Column(String(100), nullable=True)
+    product_id_path = Column(String(100), nullable=True)
+    product_name_path = Column(String(100), nullable=True)
+    product_price_path = Column(String(100), nullable=True)
+    product_stock_path = Column(String(100), nullable=True)
+
+    # Dynamic Purchase Mapping Config
+    purchase_url = Column(String(255), nullable=True)
+    purchase_method = Column(String(10), nullable=True, default='POST')
+    purchase_payload_template = Column(Text, nullable=True)
+    purchase_headers = Column(Text, nullable=True)
+    purchase_order_id_path = Column(String(100), nullable=True)
+    purchase_credentials_path = Column(String(100), nullable=True)
+
     def __str__(self):
         return self.name or ""
 

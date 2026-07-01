@@ -11,6 +11,9 @@ from bot.misc.services.reseller.client import (
 logger = logging.getLogger(__name__)
 
 def get_provider_client(provider: ResellerProviders):
+    if provider.products_url:
+        from bot.misc.services.reseller.client import DynamicResellerClient
+        return DynamicResellerClient(provider)
     name_lower = provider.name.lower()
     if "catalyst" in name_lower:
         return CatalystClient(provider.base_url, provider.api_key)
