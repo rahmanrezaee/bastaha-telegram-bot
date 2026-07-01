@@ -387,6 +387,53 @@ class Reviews(Database.BASE):
         return f"{self.item_name} ({self.rating}★)"
 
 
+class ResellerProviders(Database.BASE):
+    __tablename__ = 'reseller_providers'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), unique=True, nullable=False)
+    base_url = Column(String(255), nullable=False)
+    api_key = Column(String(255), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    markup_percent = Column(Numeric(6, 2), nullable=False, default=0.00)
+
+    def __str__(self):
+        return self.name or ""
+
+
+class ResellerProducts(Database.BASE):
+    __tablename__ = 'reseller_products'
+    id = Column(Integer, primary_key=True)
+    provider_id = Column(Integer, ForeignKey('reseller_providers.id', ondelete='CASCADE'), nullable=False, index=True)
+    upstream_id = Column(String(100), nullable=False)
+    name = Column(String(255), nullable=False)
+    original_price = Column(Numeric(12, 2), nullable=False)
+    stock = Column(Integer, nullable=False, default=0)
+    mapped_goods_id = Column(Integer, ForeignKey('goods.id', ondelete='SET NULL'), nullable=True, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('provider_id', 'upstream_id', name='uq_provider_upstream_product'),
+    )
+
+    def __str__(self):
+        return f"{self.name} (Upstream ID: {self.upstream_id})"
+
+
+class ResellerOrders(Database.BASE):
+    __tablename__ = 'reseller_orders'
+    id = Column(Integer, primary_key=True)
+    bought_goods_id = Column(Integer, ForeignKey('bought_goods.id', ondelete='SET NULL'), nullable=True, index=True)
+    provider_id = Column(Integer, ForeignKey('reseller_providers.id', ondelete='SET NULL'), nullable=True, index=True)
+    upstream_product_id = Column(String(100), nullable=False)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    status = Column(String(20), nullable=False, default='pending', index=True)
+    error_message = Column(Text, nullable=True)
+    upstream_order_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+    def __str__(self):
+        return f"Order #{self.id} ({self.status})"
+
+
 async def register_models():
     async with Database().engine.begin() as conn:
         await conn.run_sync(Database.BASE.metadata.create_all)

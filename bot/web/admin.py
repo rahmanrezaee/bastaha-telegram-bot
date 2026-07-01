@@ -59,6 +59,7 @@ from bot.database.models.main import (
     User, Role, Goods, ItemValues,
     BoughtGoods, Operations, Payments, ReferralEarnings,
     AuditLog, PromoCodes, Reviews,
+    ResellerProviders, ResellerProducts, ResellerOrders,
 )
 from bot.misc.metrics import get_metrics
 from bot.misc.caching import get_cache_manager
@@ -311,6 +312,55 @@ class ReviewsAdmin(AuditModelView, model=Reviews):
     name = "Review"
     name_plural = "Reviews"
     icon = "fa-solid fa-star"
+
+
+class ResellerProvidersAdmin(AuditModelView, model=ResellerProviders):
+    column_list = [ResellerProviders.id, ResellerProviders.name, ResellerProviders.base_url,
+                   ResellerProviders.is_active, ResellerProviders.markup_percent]
+    column_searchable_list = [ResellerProviders.name]
+    column_sortable_list = [ResellerProviders.id, ResellerProviders.name, ResellerProviders.markup_percent]
+    name = "Reseller Provider"
+    name_plural = "Reseller Providers"
+    icon = "fa-solid fa-plug"
+
+
+class ResellerProductsAdmin(AuditModelView, model=ResellerProducts):
+    column_list = [ResellerProducts.id, ResellerProducts.provider_id, ResellerProducts.upstream_id,
+                   ResellerProducts.name, ResellerProducts.original_price, ResellerProducts.stock,
+                   ResellerProducts.mapped_goods_id]
+    column_searchable_list = [ResellerProducts.name, ResellerProducts.upstream_id]
+    column_sortable_list = [ResellerProducts.id, ResellerProducts.name, ResellerProducts.original_price, ResellerProducts.stock]
+    name = "Reseller Product"
+    name_plural = "Reseller Products"
+    icon = "fa-solid fa-tags"
+
+
+class ResellerOrdersAdmin(ModelView, model=ResellerOrders):
+    column_list = [ResellerOrders.id, ResellerOrders.bought_goods_id, ResellerOrders.provider_id,
+                   ResellerOrders.upstream_product_id, ResellerOrders.idempotency_key, ResellerOrders.status,
+                   ResellerOrders.upstream_order_id, ResellerOrders.created_at]
+    column_searchable_list = [ResellerOrders.idempotency_key, ResellerOrders.upstream_order_id]
+    column_sortable_list = [ResellerOrders.id, ResellerOrders.status, ResellerOrders.created_at]
+    name = "Reseller Order"
+    name_plural = "Reseller Orders"
+    icon = "fa-solid fa-receipt"
+
+
+class ResellerSyncAdmin(BaseView):
+    name = "Sync API Products"
+    icon = "fa-solid fa-rotate"
+
+    @expose("/sync_catalog", methods=["GET"])
+    async def sync_catalog_get(self, request: Request) -> RedirectResponse:
+        if not request.session.get("authenticated"):
+            return RedirectResponse(url="/admin/login", status_code=303)
+        from bot.misc.services.reseller import sync_reseller_products
+        try:
+            await sync_reseller_products()
+            return RedirectResponse(url="/admin/resellerproducts/list", status_code=303)
+        except Exception as e:
+            logger.error(f"Catalog sync failed: {e}")
+            return RedirectResponse(url="/admin/resellerproducts/list", status_code=303)
 
 
 # Health & Metrics Endpoints
@@ -825,5 +875,9 @@ def create_admin_app() -> Starlette:
     if EnvKeys.REVIEWS_ENABLED == "1":
         admin.add_view(ReviewsAdmin)
     admin.add_view(BroadcastAdmin)
+    admin.add_view(ResellerProvidersAdmin)
+    admin.add_view(ResellerProductsAdmin)
+    admin.add_view(ResellerOrdersAdmin)
+    admin.add_view(ResellerSyncAdmin)
 
     return app

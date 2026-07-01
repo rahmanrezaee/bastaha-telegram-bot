@@ -646,6 +646,23 @@ async def buy_from_balance_handler(call: CallbackQuery, state: FSMContext):
             qty=qty
         )
 
+        if success and purchase_data and purchase_data.get('value') == "API_RESELL":
+            from bot.misc.services.reseller import dispatch_reseller_purchase
+            reseller_success, reseller_cred = await dispatch_reseller_purchase(
+                telegram_id=user_id,
+                bought_id=purchase_data['bought_id'],
+                item_name=purchase_data['item_name'],
+                final_price=Decimal(str(purchase_data['price'])),
+                qty=qty
+            )
+            if not reseller_success:
+                await call.message.edit_text(
+                    localize("shop.out_of_stock"),
+                    reply_markup=back('back_to_item')
+                )
+                return
+            purchase_data['value'] = reseller_cred
+
         if not success:
             # Error handling
             error_messages = {

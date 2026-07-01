@@ -22,7 +22,8 @@ target_metadata = Database.BASE.metadata
 
 
 def get_url() -> str:
-    url = dsn()
+    import os
+    url = os.getenv("DATABASE_URL") or dsn()
     return url
 
 
@@ -45,7 +46,7 @@ def do_run_migrations(connection) -> None:
 
 
 async def run_migrations_online_async() -> None:
-    connectable = create_async_engine(dsn(), poolclass=pool.NullPool)
+    connectable = create_async_engine(get_url(), poolclass=pool.NullPool)
 
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
