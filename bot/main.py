@@ -123,6 +123,16 @@ async def __on_start_up(dp: Dispatcher, bot: Bot) -> None:
     admin_server = uvicorn.Server(config)
     asyncio.create_task(admin_server.serve())
 
+    logging.info("--- Admin Panel Debugging Info ---")
+    import os
+    logging.info(f"Environment PORT: {os.getenv('PORT')}")
+    logging.info(f"Environment ADMIN_PORT: {os.getenv('ADMIN_PORT')}")
+    logging.info(f"Environment MONITORING_PORT: {os.getenv('MONITORING_PORT')}")
+    logging.info(f"Resolved ADMIN_HOST: {EnvKeys.ADMIN_HOST}")
+    logging.info(f"Resolved ADMIN_PORT: {EnvKeys.ADMIN_PORT}")
+    logging.info(f"Starlette Admin panel URL: http://{EnvKeys.ADMIN_HOST}:{EnvKeys.ADMIN_PORT}/admin/")
+    logging.info(f"Starlette Broadcast URL: http://{EnvKeys.ADMIN_HOST}:{EnvKeys.ADMIN_PORT}/admin/broadcast")
+    logging.info("----------------------------------")
     logging.info(f"Recovery and admin panel initialized on {EnvKeys.ADMIN_HOST}:{EnvKeys.ADMIN_PORT}")
 
 
