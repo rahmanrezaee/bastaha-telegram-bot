@@ -357,10 +357,10 @@ class ResellerSyncAdmin(BaseView):
         from bot.misc.services.reseller import sync_reseller_products
         try:
             await sync_reseller_products()
-            return RedirectResponse(url="/admin/resellerproducts/list", status_code=303)
+            return RedirectResponse(url="/admin/reseller-products/list", status_code=303)
         except Exception as e:
             logger.error(f"Catalog sync failed: {e}")
-            return RedirectResponse(url="/admin/resellerproducts/list", status_code=303)
+            return RedirectResponse(url="/admin/reseller-products/list", status_code=303)
 
 
 # Health & Metrics Endpoints
