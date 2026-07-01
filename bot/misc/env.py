@@ -69,8 +69,8 @@ class EnvKeys(ABC):
     REVIEWS_ENABLED: Final = _get_optional("REVIEWS_ENABLED", "1")
 
     # Web admin panel
-    ADMIN_HOST: Final = _get_optional("ADMIN_HOST", _get_optional("MONITORING_HOST", "localhost"))
-    ADMIN_PORT: Final = int(_get_optional("ADMIN_PORT", _get_optional("MONITORING_PORT", "9090")))
+    ADMIN_HOST: Final = _get_optional("ADMIN_HOST", _get_optional("MONITORING_HOST", "0.0.0.0"))
+    ADMIN_PORT: Final = int(_get_optional("ADMIN_PORT", _get_optional("PORT", _get_optional("MONITORING_PORT", "9090"))))
     ADMIN_USERNAME: Final = _get_optional("ADMIN_USERNAME", "admin")
     ADMIN_PASSWORD: Final = _get_optional("ADMIN_PASSWORD", "admin")
     SECRET_KEY: Final = _get_optional("SECRET_KEY", "change-me-in-production")
