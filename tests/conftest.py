@@ -125,7 +125,7 @@ async def db_cleanup(setup_test_database):
     from bot.database.main import Database
     from bot.database.models.main import (
         ReferralEarnings, BoughtGoods, Operations, Payments,
-        ItemValues, Goods, Categories, User, Role
+        ItemValues, Goods, User, Role
     )
 
     db = Database()
@@ -137,7 +137,6 @@ async def db_cleanup(setup_test_database):
         await s.execute(delete(Payments))
         await s.execute(delete(ItemValues))
         await s.execute(delete(Goods))
-        await s.execute(delete(Categories))
         await s.execute(delete(User))
         # Delete custom roles (keep built-in)
         await s.execute(delete(Role).where(Role.name.notin_(['USER', 'ADMIN', 'OWNER'])))
@@ -175,6 +174,8 @@ def patch_safe_create_task():
 @pytest.fixture(autouse=True)
 def patch_env_keys():
     """Provide safe default EnvKeys for tests."""
+    from bot.misc.env import EnvKeys
+    original_values = {}
     patches = {
         'PAY_CURRENCY': 'RUB',
         'REFERRAL_PERCENT': 10,
@@ -189,9 +190,12 @@ def patch_env_keys():
         'HELPER_ID': '',
         'RULES': 'Test rules',
     }
-
-    with patch.multiple('bot.misc.env.EnvKeys', **patches):
-        yield
+    for k, v in patches.items():
+        original_values[k] = getattr(EnvKeys, k, None)
+        setattr(EnvKeys, k, v)
+    yield
+    for k, v in original_values.items():
+        setattr(EnvKeys, k, v)
 
 
 @pytest.fixture(autouse=True)
@@ -209,7 +213,6 @@ def mock_localize():
             patch('bot.handlers.user.shop_and_goods.localize', side_effect=fake_localize), \
             patch('bot.handlers.user.referral_system.localize', side_effect=fake_localize), \
             patch('bot.handlers.admin.user_management_states.localize', side_effect=fake_localize), \
-            patch('bot.handlers.admin.categories_management_states.localize', side_effect=fake_localize), \
             patch('bot.handlers.admin.goods_management_states.localize', side_effect=fake_localize), \
             patch('bot.handlers.admin.role_management_states.localize', side_effect=fake_localize):
         yield m
@@ -242,30 +245,17 @@ def user_factory():
 
 
 @pytest.fixture
-def category_factory():
-    """Factory to create categories."""
-    from bot.database.methods.create import create_category
-
-    async def _create(name: str = "TestCategory"):
-        await create_category(name)
-
-    return _create
-
-
-@pytest.fixture
-def item_factory(category_factory):
+def item_factory():
     """Factory to create items with optional stock values."""
     from bot.database.methods.create import create_item, add_values_to_item
 
     async def _create(
             name: str = "TestItem",
             price: int = 100,
-            category: str = "TestCategory",
             description: str = "Test description",
             values: list = None,
     ):
-        await category_factory(category)
-        await create_item(name, description, price, category)
+        await create_item(name, description, price)
         if values:
             for val, is_inf in values:
                 await add_values_to_item(name, val, is_inf)

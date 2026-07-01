@@ -11,11 +11,11 @@ from bot.database.methods.read import (
     check_user, check_role, get_role_id_by_name,
     check_role_name_by_id, select_max_role_id,
     select_today_users, get_user_count,
-    get_all_users, check_category,
+    get_all_users,
     get_item_info, check_value,
     select_item_values_amount,
     select_count_items, select_count_goods,
-    select_count_categories, select_user_items,
+    select_user_items,
     select_user_operations,
     check_user_referrals, get_user_referral,
     get_referral_earnings_stats,
@@ -28,11 +28,11 @@ from bot.database.methods.read import (
 )
 from bot.database.methods.update import (
     update_balance, set_role, set_user_blocked,
-    is_user_blocked, update_item, update_category,
+    is_user_blocked, update_item,
 )
 from bot.database.methods.delete import (
     delete_item, delete_only_items,
-    delete_item_from_position, delete_category,
+    delete_item_from_position,
 )
 
 
@@ -148,94 +148,62 @@ class TestRoleCRUD:
         assert await count_users_with_role(user_role) >= 1
 
 
-class TestCategoryCRUD:
-    async def test_create_and_check_category(self, category_factory):
-        await category_factory("Electronics")
-        cat = await check_category("Electronics")
-        assert cat is not None
-        assert cat["name"] == "Electronics"
-
-    async def test_create_category_duplicate_ignored(self, category_factory):
-        await category_factory("Books")
-        await category_factory("Books")
-        assert await select_count_categories() == 1
-
-    async def test_check_category_not_found(self):
-        assert await check_category("Nonexistent") is None
-
-    async def test_select_count_categories(self, category_factory):
-        await category_factory("CatA")
-        await category_factory("CatB")
-        assert await select_count_categories() == 2
-
-    async def test_update_category_rename(self, category_factory):
-        await category_factory("OldCat")
-        await update_category("OldCat", "NewCat")
-        assert await check_category("OldCat") is None
-        assert await check_category("NewCat") is not None
-
-    async def test_delete_category(self, category_factory):
-        await category_factory("ToDelete")
-        await delete_category("ToDelete")
-        assert await check_category("ToDelete") is None
-
-
 class TestItemCRUD:
     async def test_create_and_get_item_info(self, item_factory):
-        await item_factory(name="Widget", price=50, category="Gadgets")
+        await item_factory(name="Widget", price=50)
         item = await get_item_info("Widget")
         assert item is not None
         assert item["name"] == "Widget"
         assert item["price"] == Decimal("50")
 
     async def test_get_item_info(self, item_factory):
-        await item_factory(name="InfoItem", price=75, category="InfoCat", description="Desc here")
+        await item_factory(name="InfoItem", price=75, description="Desc here")
         info = await get_item_info("InfoItem")
         assert info is not None
         assert info["description"] == "Desc here"
 
     async def test_create_item_duplicate_ignored(self, item_factory):
-        await item_factory(name="DupItem", category="DupCat")
-        await create_item("DupItem", "desc2", 200, "DupCat")
+        await item_factory(name="DupItem")
+        await create_item("DupItem", "desc2", 200)
         assert await select_count_goods() == 1
 
     async def test_add_values_to_item(self, item_factory):
-        await item_factory(name="ValItem", category="ValCat")
+        await item_factory(name="ValItem")
         result = await add_values_to_item("ValItem", "code123", False)
         assert result is True
         assert await select_item_values_amount("ValItem") == 1
 
     async def test_add_values_duplicate_returns_false(self, item_factory):
-        await item_factory(name="DupVal", category="DupValCat")
+        await item_factory(name="DupVal")
         await add_values_to_item("DupVal", "abc", False)
         result = await add_values_to_item("DupVal", "abc", False)
         assert result is False
 
     async def test_add_values_empty_returns_false(self, item_factory):
-        await item_factory(name="EmptyVal", category="EmptyValCat")
+        await item_factory(name="EmptyVal")
         assert await add_values_to_item("EmptyVal", "", False) is False
         assert await add_values_to_item("EmptyVal", "   ", False) is False
 
     async def test_check_value_infinity(self, item_factory):
-        await item_factory(name="InfItem", category="InfCat", values=[("inf_val", True)])
+        await item_factory(name="InfItem", values=[("inf_val", True)])
         assert await check_value("InfItem") is True
 
     async def test_check_value_no_infinity(self, item_factory):
-        await item_factory(name="FinItem", category="FinCat", values=[("fin_val", False)])
+        await item_factory(name="FinItem", values=[("fin_val", False)])
         assert await check_value("FinItem") is False
 
     async def test_select_count_items(self, item_factory):
-        await item_factory(name="CI1", category="CICat", values=[("v1", False), ("v2", False)])
+        await item_factory(name="CI1", values=[("v1", False), ("v2", False)])
         assert await select_count_items() == 2
 
     async def test_select_count_goods(self, item_factory):
-        await item_factory(name="G1", category="GCat")
-        await item_factory(name="G2", category="GCat")
+        await item_factory(name="G1")
+        await item_factory(name="G2")
         assert await select_count_goods() == 2
 
     async def test_update_item_same_name(self, item_factory):
-        await item_factory(name="UpdItem", price=100, category="UpdCat", description="old desc")
-        ok, err = await update_item("UpdItem", "UpdItem", "new desc", 200, "UpdCat")
+        await item_factory(name="UpdItem", price=100, description="old desc")
+        ok, err = await update_item("UpdItem", "UpdItem", "new desc", 200)
         assert ok is True
         assert err is None
         info = await get_item_info("UpdItem")
@@ -243,30 +211,30 @@ class TestItemCRUD:
         assert info["price"] == Decimal("200")
 
     async def test_update_item_rename(self, item_factory):
-        await item_factory(name="RenameOld", price=10, category="RenCat")
-        ok, err = await update_item("RenameOld", "RenameNew", "desc", 10, "RenCat")
+        await item_factory(name="RenameOld", price=10)
+        ok, err = await update_item("RenameOld", "RenameNew", "desc", 10)
         assert ok is True
         assert await get_item_info("RenameOld") is None
         assert await get_item_info("RenameNew") is not None
 
     async def test_update_item_not_found(self):
-        ok, err = await update_item("Ghost", "Ghost2", "d", 1, "c")
+        ok, err = await update_item("Ghost", "Ghost2", "d", 1)
         assert ok is False
 
     async def test_delete_item(self, item_factory):
-        await item_factory(name="DelItem", category="DelCat", values=[("dv", False)])
+        await item_factory(name="DelItem", values=[("dv", False)])
         await delete_item("DelItem")
         assert await get_item_info("DelItem") is None
         assert await select_item_values_amount("DelItem") == 0
 
     async def test_delete_only_items(self, item_factory):
-        await item_factory(name="DelOnlyItem", category="DOCat", values=[("x", False)])
+        await item_factory(name="DelOnlyItem", values=[("x", False)])
         await delete_only_items("DelOnlyItem")
         assert await get_item_info("DelOnlyItem") is not None
         assert await select_item_values_amount("DelOnlyItem") == 0
 
     async def test_delete_item_from_position(self, item_factory):
-        await item_factory(name="PosItem", category="PosCat", values=[("p1", False), ("p2", False)])
+        await item_factory(name="PosItem", values=[("p1", False), ("p2", False)])
         # Get one item value id via async DB session
         from bot.database import Database as DB
         from bot.database.models import ItemValues

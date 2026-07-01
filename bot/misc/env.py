@@ -43,6 +43,9 @@ class EnvKeys(ABC):
     # Payments
     TELEGRAM_PROVIDER_TOKEN: Final = _get_optional("TELEGRAM_PROVIDER_TOKEN", "")
     CRYPTO_PAY_TOKEN: Final = _get_optional("CRYPTO_PAY_TOKEN", "")
+    WALLET_PAY_TOKEN: Final = _get_optional("WALLET_PAY_TOKEN", "")
+    BINANCE_PAY_KEY: Final = _get_optional("BINANCE_PAY_KEY", "")
+    BINANCE_PAY_SECRET: Final = _get_optional("BINANCE_PAY_SECRET", "")
     STARS_PER_VALUE: Final = float(_get_optional("STARS_PER_VALUE", "0.91"))
     REFERRAL_PERCENT: Final = int(_get_optional("REFERRAL_PERCENT", "0"))
     PAY_CURRENCY: Final = _get_optional("PAY_CURRENCY", "RUB")

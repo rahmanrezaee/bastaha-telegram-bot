@@ -251,3 +251,136 @@ class CryptoPayAPI:
         res = await self._request("getInvoices", params)
         items = res.get("result", {}).get("items")
         return items[0] if items else {}
+
+
+class WalletPayAPIError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(f"WalletPay API Error: {message}")
+
+
+class WalletPayAPI:
+    """Minimal async client for Telegram Wallet Pay Store API."""
+    _timeout = aiohttp.ClientTimeout(total=30)
+    _session: Optional[aiohttp.ClientSession] = None
+
+    def __init__(self):
+        self.token = EnvKeys.WALLET_PAY_TOKEN
+        self.base_url = "https://pay.wallet.tg/wpay/store-api/v1"
+
+    @classmethod
+    def _get_session(cls) -> aiohttp.ClientSession:
+        if cls._session is None or cls._session.closed:
+            cls._session = aiohttp.ClientSession(timeout=cls._timeout)
+        return cls._session
+
+    async def _request(self, method: str, endpoint: str, json_data: dict = None, params: dict = None) -> dict:
+        headers = {
+            "Wpay-Store-Api-Key": self.token,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        url = f"{self.base_url}/{endpoint}"
+        session = self._get_session()
+        
+        async with session.request(method, url, json=json_data, params=params, headers=headers) as resp:
+            data = await resp.json()
+            if data.get("status") != "SUCCESS":
+                raise WalletPayAPIError(data.get("message", "Unknown Error"))
+            return data.get("data", {})
+
+    async def create_order(self, amount: float, currency: str, description: str, external_id: str, timeout_seconds: int, customer_telegram_user_id: int) -> dict:
+        payload = {
+            "amount": {
+                "currencyCode": currency,
+                "amount": str(amount)
+            },
+            "description": description,
+            "externalId": external_id,
+            "timeoutSeconds": timeout_seconds,
+            "customerTelegramUserId": customer_telegram_user_id
+        }
+        return await self._request("POST", "order", json_data=payload)
+
+    async def get_order_preview(self, order_id: str) -> dict:
+        return await self._request("GET", "reconciliation/order-preview", params={"id": order_id})
+
+
+class BinancePayAPIError(Exception):
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"BinancePay API Error [{code}]: {message}")
+
+
+class BinancePayAPI:
+    """Minimal async client for Binance Pay API."""
+    _timeout = aiohttp.ClientTimeout(total=30)
+    _session: Optional[aiohttp.ClientSession] = None
+
+    def __init__(self):
+        self.api_key = EnvKeys.BINANCE_PAY_KEY
+        self.secret_key = EnvKeys.BINANCE_PAY_SECRET
+        self.base_url = "https://bpay.binanceapi.com"
+
+    @classmethod
+    def _get_session(cls) -> aiohttp.ClientSession:
+        if cls._session is None or cls._session.closed:
+            cls._session = aiohttp.ClientSession(timeout=cls._timeout)
+        return cls._session
+
+    def _generate_signature(self, timestamp: str, nonce: str, body: str) -> str:
+        import hmac
+        import hashlib
+        payload = f"{timestamp}\n{nonce}\n{body}\n"
+        return hmac.new(self.secret_key.encode('utf-8'), payload.encode('utf-8'), hashlib.sha512).hexdigest().upper()
+
+    async def _request(self, method: str, endpoint: str, json_data: dict = None) -> dict:
+        import time
+        import string
+        import random
+        
+        timestamp = str(int(time.time() * 1000))
+        nonce = ''.join(random.choices(string.ascii_letters + string.digits, k=32))
+        body_str = json.dumps(json_data) if json_data else ""
+        signature = self._generate_signature(timestamp, nonce, body_str)
+        
+        headers = {
+            "Content-Type": "application/json",
+            "BinancePay-Timestamp": timestamp,
+            "BinancePay-Nonce": nonce,
+            "BinancePay-Certificate-Sn": self.api_key,
+            "BinancePay-Signature": signature
+        }
+        url = f"{self.base_url}/{endpoint}"
+        session = self._get_session()
+        
+        async with session.request(method, url, json=json_data, headers=headers) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            if data.get("status") != "SUCCESS":
+                error_msg = data.get("errorMessage", "Unknown error")
+                error_code = data.get("code", "000000")
+                raise BinancePayAPIError(error_code, error_msg)
+            return data.get("data", {})
+
+    async def create_order(self, merchant_trade_no: str, order_amount: float, currency: str, description: str) -> dict:
+        payload = {
+            "env": {"terminalType": "WEB"},
+            "merchantTradeNo": merchant_trade_no,
+            "orderAmount": order_amount,
+            "currency": currency,
+            "description": description,
+            "goodsDetails": [{
+                "goodsType": "02",
+                "goodsCategory": "Z000",
+                "referenceGoodsId": "item",
+                "goodsName": description,
+                "goodsDetail": description
+            }]
+        }
+        return await self._request("POST", "binancepay/openapi/v2/order", json_data=payload)
+
+    async def query_order(self, merchant_trade_no: str) -> dict:
+        payload = {"merchantTradeNo": merchant_trade_no}
+        return await self._request("POST", "binancepay/openapi/v2/order/query", json_data=payload)

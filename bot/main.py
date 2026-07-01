@@ -8,7 +8,6 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.storage.redis import RedisStorage
 
-from bot.handlers.admin.shop_management_states import init_stats_cache
 from bot.misc import EnvKeys
 from bot.handlers import register_all_handlers
 from bot.database.models import register_models
@@ -87,8 +86,7 @@ async def __on_start_up(dp: Dispatcher, bot: Bot) -> None:
         # Use the same Redis for caching
         await init_cache_manager(storage.redis)
 
-        # Initialize the statistics cache
-        init_stats_cache()
+
 
         # Warm up critical caches at startup
         await warm_up_critical_caches()
@@ -115,6 +113,7 @@ async def __on_start_up(dp: Dispatcher, bot: Bot) -> None:
     from bot.web import create_admin_app
 
     admin_app = create_admin_app()
+    admin_app.state.bot = bot
     config = uvicorn.Config(
         admin_app,
         host=EnvKeys.ADMIN_HOST,

@@ -102,7 +102,7 @@ async def invalid_amount(message: Message, state: FSMContext):
 
 @router.callback_query(
     BalanceStates.waiting_payment,
-    F.data.in_(["pay_cryptopay", "pay_stars", "pay_fiat"])
+    F.data.in_(["pay_cryptopay", "pay_stars", "pay_fiat", "pay_wallet", "pay_binance"])
 )
 async def process_replenish_balance(call: CallbackQuery, state: FSMContext):
     """Create an invoice for the chosen payment method."""
@@ -119,7 +119,9 @@ async def process_replenish_balance(call: CallbackQuery, state: FSMContext):
     provider_map = {
         "pay_cryptopay": "cryptopay",
         "pay_stars": "stars",
-        "pay_fiat": "fiat"
+        "pay_fiat": "fiat",
+        "pay_wallet": "wallet",
+        "pay_binance": "binance"
     }
     provider = provider_map.get(call.data)
 
@@ -196,6 +198,92 @@ async def process_replenish_balance(call: CallbackQuery, state: FSMContext):
                 await call.answer(localize("payments.not_configured"), show_alert=True)
                 return
 
+        elif call.data == "pay_wallet":
+            if not EnvKeys.WALLET_PAY_TOKEN:
+                await call.answer(localize("payments.not_configured"), show_alert=True)
+                return
+
+            try:
+                from bot.misc.services.payment import WalletPayAPI
+                wallet = WalletPayAPI()
+                ext_id = f"wallet_{call.from_user.id}_{uuid.uuid4().hex[:8]}"
+                order = await wallet.create_order(
+                    amount=float(amount_dec),
+                    currency=payment_request.currency,
+                    description=f"Balance topup for {call.from_user.id}",
+                    external_id=ext_id,
+                    timeout_seconds=ttl_seconds,
+                    customer_telegram_user_id=call.from_user.id
+                )
+            except Exception as e:
+                await log_audit("walletpay_invoice_fail", level="ERROR", user_id=call.from_user.id, resource_type="Payment", details=str(e))
+                await call.answer(localize("payments.crypto.create_fail", error=str(e)), show_alert=True)
+                return
+
+            pay_url = order.get("payLink") or order.get("directPayLink")
+            invoice_id = str(order.get("id", ext_id))
+
+            await create_pending_payment(
+                provider="wallet",
+                external_id=invoice_id,
+                user_id=call.from_user.id,
+                amount=int(amount_dec),
+                currency=payment_request.currency,
+            )
+
+            await state.update_data(invoice_id=invoice_id, payment_type="wallet", amount=int(amount_dec))
+
+            await call.message.edit_text(
+                localize("payments.invoice.summary",
+                         amount=int(amount_dec),
+                         minutes=int(ttl_seconds / 60),
+                         button=localize("btn.check_payment"),
+                         currency=payment_request.currency),
+                reply_markup=payment_menu(pay_url)
+            )
+
+        elif call.data == "pay_binance":
+            if not EnvKeys.BINANCE_PAY_KEY:
+                await call.answer(localize("payments.not_configured"), show_alert=True)
+                return
+
+            try:
+                from bot.misc.services.payment import BinancePayAPI
+                binance = BinancePayAPI()
+                ext_id = f"bin_{call.from_user.id}_{uuid.uuid4().hex[:8]}"
+                order = await binance.create_order(
+                    merchant_trade_no=ext_id,
+                    order_amount=float(amount_dec),
+                    currency=payment_request.currency,
+                    description=f"Balance topup {call.from_user.id}"
+                )
+            except Exception as e:
+                await log_audit("binancepay_invoice_fail", level="ERROR", user_id=call.from_user.id, resource_type="Payment", details=str(e))
+                await call.answer(localize("payments.crypto.create_fail", error=str(e)), show_alert=True)
+                return
+
+            pay_url = order.get("checkoutUrl")
+            invoice_id = ext_id
+
+            await create_pending_payment(
+                provider="binance",
+                external_id=invoice_id,
+                user_id=call.from_user.id,
+                amount=int(amount_dec),
+                currency=payment_request.currency,
+            )
+
+            await state.update_data(invoice_id=invoice_id, payment_type="binance", amount=int(amount_dec))
+
+            await call.message.edit_text(
+                localize("payments.invoice.summary",
+                         amount=int(amount_dec),
+                         minutes=int(ttl_seconds / 60),
+                         button=localize("btn.check_payment"),
+                         currency=payment_request.currency),
+                reply_markup=payment_menu(pay_url)
+            )
+
         elif call.data == "pay_fiat":
             if not EnvKeys.TELEGRAM_PROVIDER_TOKEN:
                 await call.answer(localize("payments.not_configured"), show_alert=True)
@@ -219,10 +307,51 @@ async def process_replenish_balance(call: CallbackQuery, state: FSMContext):
         await call.answer(localize("errors.something_wrong"), show_alert=True)
 
 
+async def _process_successful_check(call, user_id, invoice_id, balance_amount, provider, state):
+    success, error_msg = await process_payment_with_referral(
+        user_id=user_id,
+        amount=Decimal(balance_amount),
+        provider=provider,
+        external_id=str(invoice_id),
+        referral_percent=EnvKeys.REFERRAL_PERCENT
+    )
+
+    if not success:
+        if error_msg == "already_processed":
+            await call.answer(localize("payments.already_processed"), show_alert=True)
+        else:
+            await call.answer(localize("errors.general_error", e=error_msg), show_alert=True)
+        return
+
+    metrics = get_metrics()
+    if metrics:
+        metrics.track_event("payment", user_id, {"amount": balance_amount, "provider": provider})
+
+    await _notify_referrer_bonus(call.bot, user_id, balance_amount, call.from_user.first_name, call.from_user.id)
+
+    await call.message.edit_text(
+        localize("payments.topped_simple",
+                 amount=balance_amount,
+                 currency=EnvKeys.PAY_CURRENCY),
+        reply_markup=back('profile')
+    )
+    await state.clear()
+
+    try:
+        user_info = await call.bot.get_chat(user_id)
+        await log_audit(
+            "balance_replenish",
+            user_id=user_id,
+            resource_type="Payment",
+            details=f"name={user_info.first_name}, amount={balance_amount} {EnvKeys.PAY_CURRENCY}, provider={provider}",
+        )
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        await log_audit("balance_replenish", level="ERROR", user_id=user_id, resource_type="Payment", details=f"log_failed: {e}")
+
 @router.callback_query(F.data == "check")
 async def checking_payment(call: CallbackQuery, state: FSMContext):
     """
-    Check CryptoPay invoice status and credit balance if paid.
+    Check invoice status and credit balance if paid.
     """
     user_id = call.from_user.id
     data = await state.get_data()
@@ -254,51 +383,60 @@ async def checking_payment(call: CallbackQuery, state: FSMContext):
         status = info.get("status")
         if status == "paid":
             balance_amount = int(Decimal(str(info.get("amount", "0"))).quantize(Decimal("1.")))
-
-            # Use transactional payment processing
-            success, error_msg = await process_payment_with_referral(
-                user_id=user_id,
-                amount=Decimal(balance_amount),
-                provider="cryptopay",
-                external_id=str(invoice_id),
-                referral_percent=EnvKeys.REFERRAL_PERCENT
-            )
-
-            if not success:
-                if error_msg == "already_processed":
-                    await call.answer(localize("payments.already_processed"), show_alert=True)
-                else:
-                    await call.answer(localize("errors.general_error", e=error_msg), show_alert=True)
-                return
-
-            metrics = get_metrics()
-            if metrics:
-                metrics.track_event("payment", user_id, {"amount": balance_amount, "provider": "cryptopay"})
-
-            # Send a notification to the referrer
-            await _notify_referrer_bonus(call.bot, user_id, balance_amount, call.from_user.first_name, call.from_user.id)
-
-            await call.message.edit_text(
-                localize("payments.topped_simple",
-                         amount=balance_amount,
-                         currency=EnvKeys.PAY_CURRENCY),
-                reply_markup=back('profile')
-            )
-            await state.clear()
-
-            # Audit log
-            try:
-                user_info = await call.bot.get_chat(user_id)
-                await log_audit(
-                    "balance_replenish",
-                    user_id=user_id,
-                    resource_type="Payment",
-                    details=f"name={user_info.first_name}, amount={balance_amount} {EnvKeys.PAY_CURRENCY}, provider=cryptopay",
-                )
-            except (TelegramBadRequest, TelegramForbiddenError) as e:
-                await log_audit("balance_replenish", level="ERROR", user_id=user_id, resource_type="Payment", details=f"log_failed: {e}")
-
+            await _process_successful_check(call, user_id, invoice_id, balance_amount, "cryptopay", state)
         elif status == "active":
+            await call.answer(localize("payments.not_paid_yet"))
+        else:
+            await call.answer(localize("payments.expired"), show_alert=True)
+
+    elif payment_type == "wallet":
+        invoice_id = data.get("invoice_id")
+        amount = data.get("amount")
+        if not invoice_id:
+            await call.answer(localize("payments.invoice_not_found"), show_alert=True)
+            await state.clear()
+            return
+            
+        try:
+            from bot.misc.services.payment import WalletPayAPI
+            wallet = WalletPayAPI()
+            info = await wallet.get_order_preview(invoice_id)
+        except Exception as e:
+            await log_audit("walletpay_check_error", level="ERROR", user_id=user_id, resource_type="Payment", details=str(e))
+            await call.answer(localize("payments.crypto.check_fail", error=str(e)), show_alert=True)
+            return
+            
+        status = info.get("status")
+        if status == "PAID":
+            balance_amount = amount or int(Decimal(str(info.get("amount", "0"))).quantize(Decimal("1.")))
+            await _process_successful_check(call, user_id, invoice_id, balance_amount, "wallet", state)
+        elif status in ("ACTIVE", "PENDING"):
+            await call.answer(localize("payments.not_paid_yet"))
+        else:
+            await call.answer(localize("payments.expired"), show_alert=True)
+
+    elif payment_type == "binance":
+        invoice_id = data.get("invoice_id")
+        amount = data.get("amount")
+        if not invoice_id:
+            await call.answer(localize("payments.invoice_not_found"), show_alert=True)
+            await state.clear()
+            return
+            
+        try:
+            from bot.misc.services.payment import BinancePayAPI
+            binance = BinancePayAPI()
+            info = await binance.query_order(invoice_id)
+        except Exception as e:
+            await log_audit("binancepay_check_error", level="ERROR", user_id=user_id, resource_type="Payment", details=str(e))
+            await call.answer(localize("payments.crypto.check_fail", error=str(e)), show_alert=True)
+            return
+            
+        status = info.get("status")
+        if status == "PAID":
+            balance_amount = amount or int(Decimal(str(info.get("orderAmount", "0"))).quantize(Decimal("1.")))
+            await _process_successful_check(call, user_id, invoice_id, balance_amount, "binance", state)
+        elif status in ("INITIAL", "PENDING"):
             await call.answer(localize("payments.not_paid_yet"))
         else:
             await call.answer(localize("payments.expired"), show_alert=True)

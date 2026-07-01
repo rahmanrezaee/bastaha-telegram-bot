@@ -1,12 +1,12 @@
 import asyncio
 from decimal import Decimal
 
-from bot.database.methods.read import invalidate_user_cache, invalidate_item_cache, invalidate_category_cache, \
+from bot.database.methods.read import invalidate_user_cache, invalidate_item_cache, \
     invalidate_stats_cache
 
 from bot.database.methods.update import update_balance, set_role, \
     set_user_blocked
-from bot.database.methods.delete import delete_item, delete_category
+from bot.database.methods.delete import delete_item
 from bot.database.methods.transactions import buy_item_transaction, \
     process_payment_with_referral
 
@@ -31,23 +31,12 @@ class TestCacheInvalidationFunctions:
         fake_cache.store["item:Test"] = {"name": "Test"}
         fake_cache.store["item_info:Test"] = {"name": "Test", "price": 100}
         fake_cache.store["item_values:Test"] = 5
-        fake_cache.store["category:Cat1"] = {"name": "Cat1"}
 
         await invalidate_item_cache("Test")
 
         assert "item:Test" not in fake_cache.store
         assert "item_info:Test" not in fake_cache.store
         assert "item_values:Test" not in fake_cache.store
-        assert "category:Cat1" not in fake_cache.store
-
-    async def test_invalidate_category_cache(self, fake_cache):
-        fake_cache.store["category:Cat"] = {"name": "Cat"}
-        fake_cache.store["category_items:Cat:page1"] = [1, 2, 3]
-
-        await invalidate_category_cache("Cat")
-
-        assert "category:Cat" not in fake_cache.store
-        assert "category_items:Cat:page1" not in fake_cache.store
 
     async def test_invalidate_stats_cache(self, fake_cache):
         fake_cache.store["stats:daily"] = 10
@@ -115,15 +104,7 @@ class TestCacheInvalidationAfterMutations:
 
         assert f"item:{item_name}" not in fake_cache.store
 
-    async def test_delete_category_invalidates_cache(self, category_factory, fake_cache):
-        cat_name = "TestCategory"
-        await category_factory(cat_name)
-        fake_cache.store[f"category:{cat_name}"] = {"name": cat_name}
 
-        await delete_category(cat_name)
-        await asyncio.sleep(0)
-
-        assert f"category:{cat_name}" not in fake_cache.store
 
     async def test_buy_item_invalidates_user_cache(
             self, user_factory, item_factory, fake_cache

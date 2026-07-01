@@ -18,8 +18,6 @@ def main_menu(role: int, channel: str | None = None, helper: str | None = None) 
         kb.button(text=localize("btn.support"), url=f"tg://user?id={helper}")
     if channel:
         kb.button(text=localize("btn.channel"), url=f"https://t.me/{channel.lstrip('@')}")
-    if Permission.has_any_admin_perm(role):
-        kb.button(text=localize("btn.admin_menu"), callback_data="console")
     kb.adjust(2)
     return kb.as_markup()
 
@@ -187,15 +185,22 @@ def get_payment_choice() -> InlineKeyboardMarkup:
     """
     Select a payment method.
     """
-    return simple_buttons(
-        [
-            (localize("btn.pay.crypto"), "pay_cryptopay"),
-            (localize("btn.pay.stars"), "pay_stars"),
-            (localize("btn.pay.tg"), "pay_fiat"),
-            (localize("btn.back"), "replenish_balance"),
-        ],
-        per_row=1,
-    )
+    from bot.misc import EnvKeys
+    buttons = []
+    
+    if EnvKeys.CRYPTO_PAY_TOKEN:
+        buttons.append((localize("btn.pay.crypto"), "pay_cryptopay"))
+    if EnvKeys.WALLET_PAY_TOKEN:
+        buttons.append(("💎 Wallet Pay", "pay_wallet"))
+    if EnvKeys.BINANCE_PAY_KEY:
+        buttons.append(("🔶 Binance Pay", "pay_binance"))
+    if EnvKeys.STARS_PER_VALUE > 0:
+        buttons.append((localize("btn.pay.stars"), "pay_stars"))
+    if EnvKeys.TELEGRAM_PROVIDER_TOKEN:
+        buttons.append((localize("btn.pay.tg"), "pay_fiat"))
+        
+    buttons.append((localize("btn.back"), "replenish_balance"))
+    return simple_buttons(buttons, per_row=1)
 
 
 def question_buttons(question: str, back_data: str) -> InlineKeyboardMarkup:
